@@ -2,9 +2,14 @@ package eu.kanade.tachiyomi.extension.all.faccina
 
 import android.app.Application
 import android.content.SharedPreferences
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
+import android.widget.Button
 import android.widget.Toast
+import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.extension.all.faccina.FaccinaHelper.getIdFromUrl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -16,6 +21,7 @@ import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import rx.Observable
@@ -25,11 +31,29 @@ import java.security.MessageDigest
 
 open class Faccina(private val suffix: String = "") : ConfigurableSource, UnmeteredSource,
     HttpSource() {
-    override val baseUrl by lazy { getPrefBaseUrl() }
+    internal val preferences: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    }
+
+    private val displayName by lazy { preferences.getString(PREF_DISPLAY_NAME, "")!! }
+
+    override val name by lazy {
+        val displayNameSuffix = displayName
+            .ifBlank { suffix }
+            .let { if (it.isNotBlank()) " ($it)" else "" }
+
+        "Faccina$displayNameSuffix"
+    }
+
+    override val id by lazy {
+        val key = "faccina" + (if (suffix == "1") "" else "_$suffix") + "/all/$versionId"
+        val bytes = MessageDigest.getInstance("MD5").digest(key.toByteArray())
+        (0..7).map { bytes[it].toLong() and 0xff shl 8 * (7 - it) }.reduce(Long::or) and Long.MAX_VALUE
+    }
 
     override val lang = "all"
 
-    override val name by lazy { "Faccina (${getPrefCustomLabel()})" }
+    override val baseUrl by lazy { preferences.getString(PREF_ADDRESS, "")!!.removeSuffix("/") }
 
     override val supportsLatest = true
 
@@ -61,7 +85,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     // Search
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList) =
-        GET("$baseUrl/api/library?page=$page&query=$query", headers)
+        GET("$baseUrl/api/library?page=$page&q=$query", headers)
 
     override fun searchMangaParse(response: Response) = latestUpdatesParse(response)
 
@@ -99,141 +123,114 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     // Preferences
-    override val id by lazy {
-        // Retain previous ID for first entry
-        val key = "faccina" + (if (suffix == "1") "" else "_$suffix") + "/all/$versionId"
-        val bytes = MessageDigest.getInstance("MD5").digest(key.toByteArray())
-        (0..7).map { bytes[it].toLong() and 0xff shl 8 * (7 - it) }
-            .reduce(Long::or) and Long.MAX_VALUE
-    }
-
-    internal val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
-
-    private fun getPrefBaseUrl(): String = preferences.getString(HOSTNAME_KEY, HOSTNAME_DEFAULT)!!
-
-    private fun getPrefCustomLabel(): String =
-        preferences.getString(CUSTOM_LABEL_KEY, suffix)!!.ifBlank { suffix }
-
-    override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
-        if (suffix == "1") {
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        if (suffix.isEmpty()) {
             ListPreference(screen.context).apply {
-                key = EXTRA_SOURCES_COUNT_KEY
+                key = PREF_EXTRA_SOURCES_COUNT
                 title = "Number of extra sources"
-                summary =
-                    "Number of additional sources to create. There will always be at least one Faccina source."
-                entries = EXTRA_SOURCES_ENTRIES
-                entryValues = EXTRA_SOURCES_ENTRIES
+                summary = "Number of additional sources to create. There will always be at least one Faccina source."
+                entries = PREF_EXTRA_SOURCES_ENTRIES
+                entryValues = PREF_EXTRA_SOURCES_ENTRIES
 
-                setDefaultValue(EXTRA_SOURCES_COUNT_DEFAULT)
-                setOnPreferenceChangeListener { _, newValue ->
-                    try {
-                        val setting = preferences.edit()
-                            .putString(EXTRA_SOURCES_COUNT_KEY, newValue as String).commit()
-                        Toast.makeText(
-                            screen.context,
-                            "Restart Tachiyomi to apply new setting.",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                        setting
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        false
-                    }
+                setDefaultValue(PREF_EXTRA_SOURCES_DEFAULT)
+                setOnPreferenceChangeListener { _, _ ->
+                    Toast.makeText(screen.context, "Restart Tachiyomi to apply new setting.", Toast.LENGTH_LONG).show()
+                    true
                 }
             }.also(screen::addPreference)
         }
-        screen.addPreference(
-            screen.editTextPreference(
-                HOSTNAME_KEY,
-                "Hostname",
-                HOSTNAME_DEFAULT,
-                baseUrl,
-                refreshSummary = true,
-            ),
+
+        screen.addEditTextPreference(
+            title = "Source display name",
+            default = suffix,
+            summary = displayName.ifBlank { "Here you can change the source displayed suffix" },
+            key = PREF_DISPLAY_NAME,
+            restartRequired = true,
         )
-        screen.addPreference(
-            screen.editTextPreference(
-                CUSTOM_LABEL_KEY,
-                "Custom Label",
-                "",
-                "Show the given label for the source instead of the default.",
-            ),
+        screen.addEditTextPreference(
+            title = "Address",
+            default = "",
+            summary = baseUrl.ifBlank { "The server address" },
+            dialogMessage = "The address must not end with a forward slash.",
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
+            validate = { it.toHttpUrlOrNull() != null && !it.endsWith("/") },
+            validationMessage = "The URL is invalid, malformed, or ends with a slash",
+            key = PREF_ADDRESS,
+            restartRequired = true,
         )
     }
 
-    private fun androidx.preference.PreferenceScreen.checkBoxPreference(
-        key: String,
-        title: String,
-        default: Boolean,
-        summary: String = "",
-    ): androidx.preference.CheckBoxPreference {
-        return androidx.preference.CheckBoxPreference(context).apply {
-            this.key = key
-            this.title = title
-            this.summary = summary
-            setDefaultValue(default)
-
-            setOnPreferenceChangeListener { _, newValue ->
-                preferences.edit().putBoolean(this.key, newValue as Boolean).commit()
-            }
-        }
-    }
-
-    private fun androidx.preference.PreferenceScreen.editTextPreference(
-        key: String,
+    private fun PreferenceScreen.addEditTextPreference(
         title: String,
         default: String,
         summary: String,
-        isPassword: Boolean = false,
-        refreshSummary: Boolean = false,
-    ): androidx.preference.EditTextPreference {
-        return androidx.preference.EditTextPreference(context).apply {
+        dialogMessage: String? = null,
+        inputType: Int? = null,
+        validate: ((String) -> Boolean)? = null,
+        validationMessage: String? = null,
+        key: String = title,
+        restartRequired: Boolean = false,
+    ) {
+        EditTextPreference(context).apply {
             this.key = key
             this.title = title
             this.summary = summary
             this.setDefaultValue(default)
+            dialogTitle = title
+            this.dialogMessage = dialogMessage
 
-            if (isPassword) {
-                setOnBindEditTextListener {
-                    it.inputType =
-                        InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setOnBindEditTextListener { editText ->
+                if (inputType != null) {
+                    editText.inputType = inputType
+                }
+
+                if (validate != null) {
+                    editText.addTextChangedListener(
+                        object : TextWatcher {
+                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
+                            override fun afterTextChanged(editable: Editable?) {
+                                requireNotNull(editable)
+
+                                val text = editable.toString()
+
+                                val isValid = text.isBlank() || validate(text)
+
+                                editText.error = if (!isValid) validationMessage else null
+                                editText.rootView.findViewById<Button>(android.R.id.button1)
+                                    ?.isEnabled = editText.error == null
+                            }
+                        },
+                    )
                 }
             }
 
             setOnPreferenceChangeListener { _, newValue ->
                 try {
-                    val newString = newValue.toString()
-                    val res = preferences.edit().putString(this.key, newString).commit()
+                    val text = newValue as String
+                    val result = text.isBlank() || validate?.invoke(text) ?: true
 
-                    if (refreshSummary) {
-                        this.apply {
-                            this.summary = newValue as String
-                        }
+                    if (restartRequired && result) {
+                        Toast.makeText(context, "Restart Tachiyomi to apply new setting.", Toast.LENGTH_LONG).show()
                     }
 
-                    Toast.makeText(
-                        context,
-                        "Restart Tachiyomi to apply new setting.",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    res
+                    result
                 } catch (e: Exception) {
                     e.printStackTrace()
                     false
                 }
             }
-        }
+        }.also(::addPreference)
     }
 
     companion object {
-        internal const val EXTRA_SOURCES_COUNT_KEY = "extraSourcesCount"
-        internal const val EXTRA_SOURCES_COUNT_DEFAULT = "2"
-        private val EXTRA_SOURCES_ENTRIES = (0..10).map { it.toString() }.toTypedArray()
+        internal const val PREF_EXTRA_SOURCES_COUNT = "Number of extra sources"
+        internal const val PREF_EXTRA_SOURCES_DEFAULT = "2"
+        private val PREF_EXTRA_SOURCES_ENTRIES = (0..10).map { it.toString() }.toTypedArray()
 
-        private const val HOSTNAME_DEFAULT = "http://127.0.0.1:3823"
-        private const val HOSTNAME_KEY = "hostname"
-        private const val CUSTOM_LABEL_KEY = "customLabel"
+        private const val PREF_ADDRESS = "Address"
+        private const val PREF_DISPLAY_NAME = "Source display name"
     }
 }
