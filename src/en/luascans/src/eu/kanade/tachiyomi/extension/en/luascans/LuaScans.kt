@@ -9,6 +9,4 @@ class LuaScans : Keyoapp(
 ) {
     // migrated from MangaThemesia to Keyoapp
     override val versionId = 2
-
-    override fun chapterListSelector() = "${super.chapterListSelector()}:not(:has(img[src^='/assets/images/Coin.svg']))"
 }

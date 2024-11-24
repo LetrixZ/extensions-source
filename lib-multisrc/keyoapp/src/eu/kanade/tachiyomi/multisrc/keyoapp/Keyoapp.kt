@@ -1,6 +1,12 @@
 package eu.kanade.tachiyomi.multisrc.keyoapp
 
+import android.app.Application
+import android.content.SharedPreferences
+import androidx.preference.PreferenceScreen
+import androidx.preference.SwitchPreferenceCompat
+import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -12,11 +18,12 @@ import eu.kanade.tachiyomi.util.asJsoup
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.text.ParseException
 import java.text.SimpleDateFormat
@@ -27,7 +34,12 @@ abstract class Keyoapp(
     override val name: String,
     override val baseUrl: String,
     final override val lang: String,
-) : ParsedHttpSource() {
+) : ParsedHttpSource(), ConfigurableSource {
+
+    protected val preferences: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    }
+
     override val supportsLatest = true
 
     override val client = network.cloudflareClient
@@ -38,6 +50,13 @@ abstract class Keyoapp(
     private val json: Json by injectLazy()
 
     private val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.ENGLISH)
+
+    protected val intl = Intl(
+        language = lang,
+        baseLanguage = "en",
+        availableLanguages = setOf("ar", "en", "fr"),
+        classLoader = this::class.java.classLoader!!,
+    )
 
     // Popular
 
@@ -218,7 +237,12 @@ abstract class Keyoapp(
 
     // Chapter list
 
-    override fun chapterListSelector(): String = "#chapters > a:not(:has(.text-sm span:matches(Upcoming)))"
+    override fun chapterListSelector(): String {
+        if (!preferences.showPaidChapters) {
+            return "#chapters > a:not(:has(.text-sm span:matches(Upcoming))):not(:has(img[src*=Coin.svg]))"
+        }
+        return "#chapters > a:not(:has(.text-sm span:matches(Upcoming)))"
+    }
 
     override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
         setUrlWithoutDomain(element.selectFirst("a[href]")!!.attr("href"))
@@ -226,16 +250,21 @@ abstract class Keyoapp(
         element.selectFirst(".text-xs")?.run {
             date_upload = text().trim().parseDate()
         }
+        if (element.select("img[src*=Coin.svg]").isNotEmpty()) {
+            name = "🔒 $name"
+        }
     }
 
     // Image list
 
     override fun pageListParse(document: Document): List<Page> {
+        val cdnUrl = getCdnUrl(document)
         document.select("#pages > img")
             .map { it.attr("uid") }
             .filter { it.isNotEmpty() }
+            .also { cdnUrl ?: throw Exception(intl["chapter_page_url_not_found"]) }
             .mapIndexed { index, img ->
-                Page(index, document.location(), "$cdnUrl/uploads/$img")
+                Page(index, document.location(), "$cdnUrl/$img")
             }
             .takeIf { it.isNotEmpty() }
             ?.also { return it }
@@ -249,7 +278,16 @@ abstract class Keyoapp(
             }
     }
 
-    protected val cdnUrl = "https://cdn.igniscans.com"
+    protected open fun getCdnUrl(document: Document): String? {
+        return document.select("script")
+            .firstOrNull { CDN_HOST_REGEX.containsMatchIn(it.html()) }
+            ?.let {
+                val cdnHost = CDN_HOST_REGEX.find(it.html())
+                    ?.groups?.get("host")?.value
+                    ?.replace(CDN_CLEAN_REGEX, "")
+                "https://$cdnHost/uploads"
+            }
+    }
 
     private val oldImgCdnRegex = Regex("""^(https?:)?//cdn\d*\.keyoapp\.com""")
 
@@ -269,12 +307,7 @@ abstract class Keyoapp(
 
     protected open fun Element.getImageUrl(selector: String): String? {
         return this.selectFirst(selector)?.let { element ->
-            element.attr("style")
-                .substringAfter(":url(", "")
-                .substringBefore(")", "")
-                .takeIf { it.isNotEmpty() }
-                ?.toHttpUrlOrNull()?.newBuilder()?.setQueryParameter("w", "480")?.build()
-                ?.toString()
+            IMG_REGEX.find(element.attr("style"))?.groups?.get("url")?.value
         }
     }
 
@@ -314,5 +347,26 @@ abstract class Keyoapp(
             "year" in this -> now.add(Calendar.YEAR, -relativeDate) // parse: "2 years ago"
         }
         return now.timeInMillis
+    }
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        SwitchPreferenceCompat(screen.context).apply {
+            key = SHOW_PAID_CHAPTERS_PREF
+            title = intl["pref_show_paid_chapter_title"]
+            summaryOn = intl["pref_show_paid_chapter_summary_on"]
+            summaryOff = intl["pref_show_paid_chapter_summary_off"]
+            setDefaultValue(SHOW_PAID_CHAPTERS_DEFAULT)
+        }.also(screen::addPreference)
+    }
+
+    protected val SharedPreferences.showPaidChapters: Boolean
+        get() = getBoolean(SHOW_PAID_CHAPTERS_PREF, SHOW_PAID_CHAPTERS_DEFAULT)
+
+    companion object {
+        private const val SHOW_PAID_CHAPTERS_PREF = "pref_show_paid_chap"
+        private const val SHOW_PAID_CHAPTERS_DEFAULT = false
+        val CDN_HOST_REGEX = """realUrl\s*=\s*`[^`]+//(?<host>[^/]+)""".toRegex()
+        val CDN_CLEAN_REGEX = """\$\{[^}]*\}""".toRegex()
+        val IMG_REGEX = """url\(['"]?(?<url>[^(['"\)])]+)""".toRegex()
     }
 }
