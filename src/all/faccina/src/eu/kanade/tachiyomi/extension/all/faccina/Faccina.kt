@@ -250,7 +250,7 @@ open class Faccina(private val suffix: String = "") :
 
     companion object {
         internal const val PREF_EXTRA_SOURCES_COUNT = "Number of extra sources"
-        internal const val PREF_EXTRA_SOURCES_DEFAULT = "2"
+        internal const val PREF_EXTRA_SOURCES_DEFAULT = "0"
         private val PREF_EXTRA_SOURCES_ENTRIES = (0..10).map { it.toString() }.toTypedArray()
 
         private const val PREF_DISPLAY_NAME = "Source display name"

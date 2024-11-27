@@ -13,17 +13,15 @@ class Archive(
     private val description: String? = null,
     private val pages: Int,
     private val thumbnail: Int,
-    private val artists: List<String> = emptyList(),
-    private val circles: List<String> = emptyList(),
-    private val tags: List<String> = emptyList(),
+    private val tags: List<Tag> = emptyList(),
 ) {
     fun toSManga(baseUrl: String) = SManga.create().apply {
         url = "/g/$id"
         title = this@Archive.title
         description = this@Archive.description
         thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
-        artist = this@Archive.artists.joinToString(", ").ifEmpty { null }
-        author = this@Archive.circles.joinToString(", ").ifEmpty { null }
+        artist = Tag.artists(this@Archive.tags).ifEmpty { null }
+        author = Tag.circles(this@Archive.tags).ifEmpty { null }
         genre = this@Archive.tags.joinToString(", ")
         status = SManga.COMPLETED
         update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
@@ -53,18 +51,50 @@ class ArchiveLibrary(
     private val hash: String,
     private val title: String,
     private val thumbnail: Int,
-    private val artists: List<String> = emptyList(),
-    private val circles: List<String> = emptyList(),
-    private val tags: List<String> = emptyList(),
+    private val tags: List<Tag> = emptyList(),
 ) {
     fun toSManga(baseUrl: String) = SManga.create().apply {
         url = "/g/$id"
         title = this@ArchiveLibrary.title
         thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
-        artist = this@ArchiveLibrary.artists.joinToString(", ").ifEmpty { null }
-        author = this@ArchiveLibrary.circles.joinToString(", ").ifEmpty { null }
+        artist = Tag.artists(this@ArchiveLibrary.tags).ifEmpty { null }
+        author = Tag.circles(this@ArchiveLibrary.tags).ifEmpty { null }
         genre = this@ArchiveLibrary.tags.joinToString(", ")
         update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
         status = SManga.COMPLETED
+    }
+}
+
+@Serializable
+class Tag(
+    val namespace: String,
+    private val name: String,
+    private val displayName: String? = null,
+) {
+    override fun toString(): String =
+        if (this.displayName !== null) "${this.namespace}:${this.displayName}" else "${this.namespace}:${this.name}"
+
+    fun name(): String = if (this.displayName !== null) this.displayName else this.name
+
+    companion object {
+        fun artists(tags: List<Tag>): String {
+            var artists = tags.filter { it.namespace == "artist" }
+
+            if (artists.isEmpty()) {
+                artists = tags.filter { it.namespace == "circle" }
+            }
+
+            return artists.joinToString(", ") { it.name() }
+        }
+
+        fun circles(tags: List<Tag>): String {
+            var circles = tags.filter { it.namespace == "circle" }
+
+            if (circles.isEmpty()) {
+                circles = tags.filter { it.namespace == "artist" }
+            }
+
+            return circles.joinToString(", ") { it.name() }
+        }
     }
 }
