@@ -98,3 +98,14 @@ class Tag(
         }
     }
 }
+
+@Serializable
+class ServerConfig(
+    val readerPresets: List<ReaderPreset>,
+)
+
+@Serializable
+class ReaderPreset(
+    val name: String,
+    val label: String,
+)

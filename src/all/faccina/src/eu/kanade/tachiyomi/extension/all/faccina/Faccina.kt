@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.extension.all.faccina
 
 import android.app.Application
+import android.content.Context
 import android.content.SharedPreferences
 import android.text.Editable
 import android.text.InputType
@@ -19,8 +20,12 @@ import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
 import rx.Observable
@@ -31,7 +36,9 @@ import java.security.MessageDigest
 open class Faccina(private val suffix: String = "") :
     ConfigurableSource, UnmeteredSource, HttpSource() {
 
-    override val baseUrl by lazy { preferences.getString(PREF_ADDRESS, "")!!.removeSuffix("/") }
+    override val baseUrl by lazy {
+        preferences.getString(PREF_HOST_ADDRESS, "")!!.removeSuffix("/")
+    }
 
     override val lang: String = "all"
 
@@ -52,7 +59,19 @@ open class Faccina(private val suffix: String = "") :
             .reduce(Long::or) and Long.MAX_VALUE
     }
 
-    override val client = network.cloudflareClient
+    override val client = network.cloudflareClient.newBuilder()
+        .addInterceptor { chain ->
+            val request = chain.request()
+
+            val presetName = imagePreset?.split(":")?.last()
+
+            if (!presetName.isNullOrBlank() && request.url.toString().contains("/image/")) {
+                val newRequest = request.newBuilder().url("${request.url}?type=$presetName").build()
+                return@addInterceptor chain.proceed(newRequest)
+            }
+
+            return@addInterceptor chain.proceed(request)
+        }.build()
 
     private val json by lazy { Injekt.get<Json>() }
 
@@ -62,7 +81,26 @@ open class Faccina(private val suffix: String = "") :
 
     private val displayName by lazy { preferences.getString(PREF_DISPLAY_NAME, "")!! }
 
+    private val imagePreset by lazy {
+        preferences.getString(
+            PREF_IMAGE_PRESET,
+            PREF_IMAGE_ORIGINAL_PRESET,
+        )
+    }
+
+    private val serverConfig by lazy {
+        try {
+            client.newCall(GET("$baseUrl/api/config", headers)).execute().use {
+                json.decodeFromStream<ServerConfig>(it.body.byteStream())
+            }
+        } catch (ex: Exception) {
+            ex.printStackTrace()
+            null
+        }
+    }
+
     // Latest
+
     override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/api/library?page=$page", headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage {
@@ -105,7 +143,7 @@ open class Faccina(private val suffix: String = "") :
         listOf(
             SChapter.create().apply {
                 url = "/g/${getIdFromUrl(manga.url)}/read"
-                name = "Chapter"
+                name = "1. Chapter"
             },
         ),
     )
@@ -125,23 +163,19 @@ open class Faccina(private val suffix: String = "") :
     override fun getChapterUrl(chapter: SChapter) = "$baseUrl/g/${getIdFromUrl(chapter.url)}"
 
     // Preferences
+
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         if (suffix.isEmpty()) {
             ListPreference(screen.context).apply {
-                key = PREF_EXTRA_SOURCES_COUNT
                 title = "Number of extra sources"
-                summary =
-                    "Number of additional sources to create. There will always be at least one Faccina source."
+                summary = "Number of additional sources to create."
                 entries = PREF_EXTRA_SOURCES_ENTRIES
                 entryValues = PREF_EXTRA_SOURCES_ENTRIES
+                key = PREF_EXTRA_SOURCES_COUNT
 
                 setDefaultValue(PREF_EXTRA_SOURCES_DEFAULT)
                 setOnPreferenceChangeListener { _, _ ->
-                    Toast.makeText(
-                        screen.context,
-                        "Restart Tachiyomi to apply new setting.",
-                        Toast.LENGTH_LONG,
-                    ).show()
+                    toastRestart(screen.context)
                     true
                 }
             }.also(screen::addPreference)
@@ -154,6 +188,7 @@ open class Faccina(private val suffix: String = "") :
             key = PREF_DISPLAY_NAME,
             restartRequired = true,
         )
+
         screen.addEditTextPreference(
             title = "Address",
             default = "",
@@ -162,9 +197,46 @@ open class Faccina(private val suffix: String = "") :
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
             validate = { it.toHttpUrlOrNull() != null && !it.endsWith("/") },
             validationMessage = "The URL is invalid, malformed, or ends with a slash",
-            key = PREF_ADDRESS,
+            key = PREF_HOST_ADDRESS,
             restartRequired = true,
         )
+
+        val presetList = ListPreference(screen.context).apply {
+            title = "Image quality preset"
+            entries = arrayOf("Original")
+            entryValues = arrayOf(PREF_IMAGE_ORIGINAL_PRESET)
+            summary = imagePreset?.split(":")?.first()
+            key = PREF_IMAGE_PRESET
+
+            setDefaultValue(PREF_IMAGE_ORIGINAL_PRESET)
+            setOnPreferenceChangeListener { _, _ ->
+                toastRestart(screen.context)
+                true
+            }
+        }.also(screen::addPreference)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            val presets = serverConfig?.readerPresets
+
+            if (presets?.isNotEmpty() == true) {
+                val entries = mutableListOf("Original")
+                val entryValues = mutableListOf(PREF_IMAGE_ORIGINAL_PRESET)
+
+                presets.forEach {
+                    entries.add(it.label)
+                    entryValues.add("${it.label}:${it.name}")
+                }
+
+                presetList.entries = entries.toTypedArray()
+                presetList.entryValues = entryValues.toTypedArray()
+            }
+
+            if (imagePreset != null && !presetList.entryValues.contains(imagePreset)) {
+                preferences.edit().putString(PREF_IMAGE_PRESET, PREF_IMAGE_ORIGINAL_PRESET).apply()
+                presetList.summary = "Original"
+                presetList.value = PREF_IMAGE_ORIGINAL_PRESET
+            }
+        }
     }
 
     private fun PreferenceScreen.addEditTextPreference(
@@ -232,11 +304,7 @@ open class Faccina(private val suffix: String = "") :
                     val result = text.isBlank() || validate?.invoke(text) ?: true
 
                     if (restartRequired && result) {
-                        Toast.makeText(
-                            context,
-                            "Restart Tachiyomi to apply new settings.",
-                            Toast.LENGTH_LONG,
-                        ).show()
+                        toastRestart(context)
                     }
 
                     result
@@ -248,12 +316,22 @@ open class Faccina(private val suffix: String = "") :
         }.also(::addPreference)
     }
 
+    private fun toastRestart(context: Context) {
+        Toast.makeText(
+            context,
+            "Restart Tachiyomi to apply new settings.",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
     companion object {
-        internal const val PREF_EXTRA_SOURCES_COUNT = "Number of extra sources"
+        internal const val PREF_EXTRA_SOURCES_COUNT = "EXTRA_SOURCES"
         internal const val PREF_EXTRA_SOURCES_DEFAULT = "0"
         private val PREF_EXTRA_SOURCES_ENTRIES = (0..10).map { it.toString() }.toTypedArray()
 
-        private const val PREF_DISPLAY_NAME = "Source display name"
-        private const val PREF_ADDRESS = "Address"
+        private const val PREF_DISPLAY_NAME = "DISPLAY_NAME"
+        private const val PREF_HOST_ADDRESS = "HOST_ADDRESS"
+        private const val PREF_IMAGE_PRESET = "IMAGE_PRESET"
+        private const val PREF_IMAGE_ORIGINAL_PRESET = "Original:"
     }
 }
