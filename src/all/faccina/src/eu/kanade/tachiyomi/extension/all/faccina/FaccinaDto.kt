@@ -101,11 +101,20 @@ class Tag(
 
 @Serializable
 class ServerConfig(
-    val readerPresets: List<ReaderPreset>,
+    val reader: Reader,
+)
+
+@Serializable
+class Reader(
+    val presets: List<ReaderPreset>,
+    val defaultPreset: String?,
+    val allowOriginal: Boolean,
 )
 
 @Serializable
 class ReaderPreset(
     val name: String,
     val label: String,
-)
+) {
+    fun toValue() = "${this.label}:${this.name}"
+}

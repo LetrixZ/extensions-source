@@ -63,11 +63,28 @@ open class Faccina(private val suffix: String = "") :
         .addInterceptor { chain ->
             val request = chain.request()
 
-            val presetName = imagePreset?.split(":")?.last()
+            if (request.url.toString().contains("/image/") &&
+                request.url.queryParameter("type") == null
+            ) {
+                val reader = serverConfig?.reader
+                val presetName = imagePreset?.split(":")?.last()
 
-            if (!presetName.isNullOrBlank() && request.url.toString().contains("/image/")) {
-                val newRequest = request.newBuilder().url("${request.url}?type=$presetName").build()
-                return@addInterceptor chain.proceed(newRequest)
+                if (reader != null) {
+                    if (presetName != null && reader.presets.any { it.name == presetName }) {
+                        val newRequest =
+                            request.newBuilder().url("${request.url}?type=$presetName").build()
+                        return@addInterceptor chain.proceed(newRequest)
+                    } else if (reader.defaultPreset != null) {
+                        val newRequest =
+                            request.newBuilder().url("${request.url}?type=${reader.defaultPreset}")
+                                .build()
+                        return@addInterceptor chain.proceed(newRequest)
+                    }
+                } else if (presetName != null) {
+                    val newRequest =
+                        request.newBuilder().url("${request.url}?type=$presetName").build()
+                    return@addInterceptor chain.proceed(newRequest)
+                }
             }
 
             return@addInterceptor chain.proceed(request)
@@ -88,7 +105,7 @@ open class Faccina(private val suffix: String = "") :
         )
     }
 
-    private val serverConfig by lazy {
+    private val serverConfig: ServerConfig? by lazy {
         try {
             client.newCall(GET("$baseUrl/api/config", headers)).execute().use {
                 json.decodeFromStream<ServerConfig>(it.body.byteStream())
@@ -216,25 +233,48 @@ open class Faccina(private val suffix: String = "") :
         }.also(screen::addPreference)
 
         CoroutineScope(Dispatchers.IO).launch {
-            val presets = serverConfig?.readerPresets
+            val reader = serverConfig?.reader
 
-            if (presets?.isNotEmpty() == true) {
-                val entries = mutableListOf("Original")
-                val entryValues = mutableListOf(PREF_IMAGE_ORIGINAL_PRESET)
+            if (reader != null) {
+                if (reader.presets.isNotEmpty()) {
+                    val entries = mutableListOf<String>()
+                    val entryValues = mutableListOf<String>()
 
-                presets.forEach {
-                    entries.add(it.label)
-                    entryValues.add("${it.label}:${it.name}")
+                    if (reader.allowOriginal) {
+                        entries.add("Original")
+                        entryValues.add(PREF_IMAGE_ORIGINAL_PRESET)
+                    }
+
+                    reader.presets.forEach {
+                        entries.add(it.label)
+                        entryValues.add(it.toValue())
+                    }
+
+                    presetList.entries = entries.toTypedArray()
+                    presetList.entryValues = entryValues.toTypedArray()
                 }
 
-                presetList.entries = entries.toTypedArray()
-                presetList.entryValues = entryValues.toTypedArray()
-            }
+                if (imagePreset == null && reader.defaultPreset != null) {
+                    reader.presets.find { it.name === reader.defaultPreset }.also {
+                        presetList.setDefaultValue(it!!.toValue())
+                    }
+                }
 
-            if (imagePreset != null && !presetList.entryValues.contains(imagePreset)) {
-                preferences.edit().putString(PREF_IMAGE_PRESET, PREF_IMAGE_ORIGINAL_PRESET).apply()
-                presetList.summary = "Original"
-                presetList.value = PREF_IMAGE_ORIGINAL_PRESET
+                if (imagePreset != null && !presetList.entryValues.contains(imagePreset)) {
+                    if (reader.defaultPreset != null || reader.presets.isNotEmpty()) {
+                        val defaultPreset = reader.presets.find { it.name === reader.defaultPreset }
+                            ?: reader.presets.first()
+                        preferences.edit().putString(PREF_IMAGE_PRESET, defaultPreset.toValue())
+                            .apply()
+                        presetList.summary = defaultPreset.label
+                        presetList.value = defaultPreset.toValue()
+                    } else if (reader.allowOriginal) {
+                        preferences.edit().putString(PREF_IMAGE_PRESET, PREF_IMAGE_ORIGINAL_PRESET)
+                            .apply()
+                        presetList.summary = "Original"
+                        presetList.value = PREF_IMAGE_ORIGINAL_PRESET
+                    }
+                }
             }
         }
     }
