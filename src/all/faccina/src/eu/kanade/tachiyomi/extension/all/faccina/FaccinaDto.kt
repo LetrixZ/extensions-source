@@ -107,14 +107,14 @@ class ServerConfig(
 @Serializable
 class Reader(
     val presets: List<ReaderPreset>,
-    val defaultPreset: String?,
+    val defaultPreset: ReaderPreset?,
     val allowOriginal: Boolean,
 )
 
 @Serializable
 class ReaderPreset(
-    val name: String,
     val label: String,
+    val hash: String,
 ) {
-    fun toValue() = "${this.label}:${this.name}"
+    fun toValue() = "${this.label}:${this.hash}"
 }

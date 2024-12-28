@@ -67,12 +67,12 @@ open class Faccina(private val suffix: String = "") :
                 request.url.queryParameter("type") == null
             ) {
                 val reader = serverConfig?.reader
-                val presetName = imagePreset?.split(":")?.last()
+                val presetHash = imagePreset?.split(":")?.last()
 
                 if (reader != null) {
-                    if (presetName != null && reader.presets.any { it.name == presetName }) {
+                    if (presetHash != null && reader.presets.any { it.hash == presetHash }) {
                         val newRequest =
-                            request.newBuilder().url("${request.url}?type=$presetName").build()
+                            request.newBuilder().url("${request.url}?type=$presetHash").build()
                         return@addInterceptor chain.proceed(newRequest)
                     } else if (reader.defaultPreset != null) {
                         val newRequest =
@@ -80,9 +80,9 @@ open class Faccina(private val suffix: String = "") :
                                 .build()
                         return@addInterceptor chain.proceed(newRequest)
                     }
-                } else if (presetName != null) {
+                } else if (presetHash != null) {
                     val newRequest =
-                        request.newBuilder().url("${request.url}?type=$presetName").build()
+                        request.newBuilder().url("${request.url}?type=$presetHash").build()
                     return@addInterceptor chain.proceed(newRequest)
                 }
             }
@@ -255,14 +255,14 @@ open class Faccina(private val suffix: String = "") :
                 }
 
                 if (imagePreset == null && reader.defaultPreset != null) {
-                    reader.presets.find { it.name === reader.defaultPreset }.also {
+                    reader.presets.find { it.hash === reader.defaultPreset.hash }.also {
                         presetList.setDefaultValue(it!!.toValue())
                     }
                 }
 
                 if (imagePreset != null && !presetList.entryValues.contains(imagePreset)) {
                     if (reader.defaultPreset != null || reader.presets.isNotEmpty()) {
-                        val defaultPreset = reader.presets.find { it.name === reader.defaultPreset }
+                        val defaultPreset = reader.presets.find { it.hash === reader.defaultPreset?.hash }
                             ?: reader.presets.first()
                         preferences.edit().putString(PREF_IMAGE_PRESET, defaultPreset.toValue())
                             .apply()
