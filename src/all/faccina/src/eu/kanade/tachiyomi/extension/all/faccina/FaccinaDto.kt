@@ -39,31 +39,11 @@ class Archive(
 
 @Serializable
 class LibraryResponse(
-    val archives: List<ArchiveLibrary> = emptyList(),
+    val archives: List<Archive> = emptyList(),
     val total: Int,
     val page: Int,
     val limit: Int,
 )
-
-@Serializable
-class ArchiveLibrary(
-    private val id: Int,
-    private val hash: String,
-    private val title: String,
-    private val thumbnail: Int,
-    private val tags: List<Tag> = emptyList(),
-) {
-    fun toSManga(baseUrl: String) = SManga.create().apply {
-        url = "/g/$id"
-        title = this@ArchiveLibrary.title
-        thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
-        artist = Tag.artists(this@ArchiveLibrary.tags).ifEmpty { null }
-        author = Tag.circles(this@ArchiveLibrary.tags).ifEmpty { null }
-        genre = this@ArchiveLibrary.tags.joinToString(", ")
-        update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
-        status = SManga.COMPLETED
-    }
-}
 
 @Serializable
 class Tag(
