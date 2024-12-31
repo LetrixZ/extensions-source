@@ -15,6 +15,8 @@ import eu.kanade.tachiyomi.extension.all.faccina.FaccinaHelper.getIdFromUrl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.UnmeteredSource
+import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.source.model.Filter.Sort.Selection
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SChapter
@@ -26,7 +28,9 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.Injekt
@@ -139,8 +143,37 @@ open class Faccina(private val suffix: String = "") :
 
     // Search
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) =
-        GET("$baseUrl/api/library?page=$page&q=$query", headers)
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+        val url = "$baseUrl/api/library?page=$page&q=$query".toHttpUrl().newBuilder()
+
+        filters.forEach { filter ->
+            when (filter) {
+                is SortFilter -> {
+                    val state = filter.state
+                    url.addQueryParameter(
+                        "sort",
+                        when (state?.index) {
+                            1 -> "created_at"
+                            2 -> "title"
+                            3 -> "pages"
+                            else -> "released_at"
+                        },
+                    )
+
+                    if (state != null) {
+                        url.addQueryParameter(
+                            "order",
+                            if (state.ascending) "asc" else "desc",
+                        )
+                    }
+                }
+
+                else -> {}
+            }
+        }
+
+        return GET(url.build(), headers)
+    }
 
     override fun searchMangaParse(response: Response) = latestUpdatesParse(response)
 
@@ -178,6 +211,18 @@ open class Faccina(private val suffix: String = "") :
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     override fun getChapterUrl(chapter: SChapter) = "$baseUrl/g/${getIdFromUrl(chapter.url)}"
+
+    // Filters
+
+    override fun getFilterList() = FilterList(
+        SortFilter(),
+    )
+
+    private class SortFilter : Filter.Sort(
+        "Sort",
+        arrayOf("Date released", "Date added", "Title", "Pages"),
+        Selection(0, false),
+    )
 
     // Preferences
 
@@ -262,8 +307,9 @@ open class Faccina(private val suffix: String = "") :
 
                 if (imagePreset != null && !presetList.entryValues.contains(imagePreset)) {
                     if (reader.defaultPreset != null || reader.presets.isNotEmpty()) {
-                        val defaultPreset = reader.presets.find { it.hash === reader.defaultPreset?.hash }
-                            ?: reader.presets.first()
+                        val defaultPreset =
+                            reader.presets.find { it.hash === reader.defaultPreset?.hash }
+                                ?: reader.presets.first()
                         preferences.edit().putString(PREF_IMAGE_PRESET, defaultPreset.toValue())
                             .apply()
                         presetList.summary = defaultPreset.label

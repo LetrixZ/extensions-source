@@ -18,7 +18,13 @@ class Archive(
     fun toSManga(baseUrl: String) = SManga.create().apply {
         url = "/g/$id"
         title = this@Archive.title
-        description = this@Archive.description
+        description = buildString {
+            appendLine("Pages: ${this@Archive.pages}")
+            if (this@Archive.description != null) {
+                appendLine()
+                appendLine(this@Archive.description)
+            }
+        }
         thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
         artist = Tag.artists(this@Archive.tags).ifEmpty { null }
         author = Tag.circles(this@Archive.tags).ifEmpty { null }
