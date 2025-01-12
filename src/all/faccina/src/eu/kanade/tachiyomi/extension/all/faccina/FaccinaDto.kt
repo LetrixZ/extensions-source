@@ -1,21 +1,51 @@
 package eu.kanade.tachiyomi.extension.all.faccina
 
+import eu.kanade.tachiyomi.extension.all.faccina.FaccinaHelper.parseDate
 import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonContentPolymorphicSerializer
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.jsonObject
+
+@Serializable(with = BaseSerializer::class)
+sealed class Base() {
+    abstract val id: Int
+    abstract val hash: String
+    abstract val title: String
+    abstract val description: String?
+    abstract val thumbnail: Int
+    abstract val tags: List<Tag>
+
+    abstract fun toSManga(baseUrl: String): SManga
+    abstract fun toSChapterList(): List<SChapter>
+}
+
+object BaseSerializer : JsonContentPolymorphicSerializer<Base>(Base::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<out Base> {
+        return if ("chapters" in element.jsonObject) {
+            Series.serializer()
+        } else {
+            Archive.serializer()
+        }
+    }
+}
 
 @Serializable
-class Archive(
-    private val id: Int,
-    private val hash: String,
-    private val title: String,
-    private val description: String? = null,
-    private val pages: Int,
-    private val thumbnail: Int,
-    private val tags: List<Tag> = emptyList(),
-) {
-    fun toSManga(baseUrl: String) = SManga.create().apply {
+data class Archive(
+    override val id: Int,
+    override val hash: String,
+    override val title: String,
+    override val description: String? = null,
+    val pages: Int,
+    override val thumbnail: Int,
+    override val tags: List<Tag> = emptyList(),
+    val createdAt: String?,
+) : Base() {
+    override fun toSManga(baseUrl: String) = SManga.create().apply {
         url = "/g/$id"
         title = this@Archive.title
         description = buildString {
@@ -34,6 +64,15 @@ class Archive(
         initialized = true
     }
 
+    override fun toSChapterList() = listOf(
+        SChapter.create().apply {
+            url = "/g/$id/read"
+            name = "1. Chapter"
+            chapter_number = 1f
+            date_upload = createdAt?.let { parseDate(it) } ?: 0
+        },
+    )
+
     fun toPageList(baseUrl: String) = (1..pages).map { page ->
         Page(
             index = page - 1,
@@ -44,8 +83,59 @@ class Archive(
 }
 
 @Serializable
+class Series(
+    override val id: Int,
+    override val hash: String,
+    override val title: String,
+    override val description: String? = null,
+    override val thumbnail: Int,
+    override val tags: List<Tag> = emptyList(),
+    val chapters: List<SeriesChapter>,
+) : Base() {
+    override fun toSManga(baseUrl: String) = SManga.create().apply {
+        url = "/s/$id"
+        title = this@Series.title
+        description = this@Series.description
+        thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
+        artist = Tag.artists(this@Series.tags).ifEmpty { null }
+        author = Tag.circles(this@Series.tags).ifEmpty { null }
+        genre = this@Series.tags.joinToString(", ")
+        status = SManga.UNKNOWN
+        update_strategy = UpdateStrategy.ALWAYS_UPDATE
+        initialized = true
+    }
+
+    override fun toSChapterList() = chapters.map { it -> it.toSChapter() }
+}
+
+@Serializable
+class SeriesChapter(
+    private val id: Int,
+    private val hash: String,
+    private val title: String,
+    val number: Int,
+    private val pages: Int,
+    private val createdAt: String,
+) {
+    fun toPageList(baseUrl: String) = (1..pages).map { page ->
+        Page(
+            index = page - 1,
+            url = "/g/$id/read/$page",
+            imageUrl = "$baseUrl/image/$hash/$page",
+        )
+    }
+
+    fun toSChapter() = SChapter.create().apply {
+        url = "/g/$id/read"
+        name = "$number. $title"
+        chapter_number = number.toFloat()
+        date_upload = parseDate(createdAt)
+    }
+}
+
+@Serializable
 class LibraryResponse(
-    val archives: List<Archive> = emptyList(),
+    val data: List<Base> = emptyList(),
     val total: Int,
     val page: Int,
     val limit: Int,

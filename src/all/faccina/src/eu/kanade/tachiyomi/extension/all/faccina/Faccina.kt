@@ -19,6 +19,7 @@ import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.Filter.Sort.Selection
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
@@ -37,8 +38,8 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
 
-open class Faccina(private val suffix: String = "") :
-    ConfigurableSource, UnmeteredSource, HttpSource() {
+open class Faccina(private val suffix: String = "") : ConfigurableSource, UnmeteredSource,
+    HttpSource() {
 
     override val baseUrl by lazy {
         preferences.getString(PREF_HOST_ADDRESS, "")!!.removeSuffix("/")
@@ -47,9 +48,8 @@ open class Faccina(private val suffix: String = "") :
     override val lang: String = "all"
 
     override val name by lazy {
-        val displayNameSuffix = displayName
-            .ifBlank { suffix }
-            .let { if (it.isNotBlank()) " ($it)" else "" }
+        val displayNameSuffix =
+            displayName.ifBlank { suffix }.let { if (it.isNotBlank()) " ($it)" else "" }
 
         "Faccina$displayNameSuffix"
     }
@@ -63,38 +63,38 @@ open class Faccina(private val suffix: String = "") :
             .reduce(Long::or) and Long.MAX_VALUE
     }
 
-    override val client = network.cloudflareClient.newBuilder()
-        .addInterceptor { chain ->
-            val request = chain.request()
+    override val client = network.cloudflareClient.newBuilder().addInterceptor { chain ->
+        val request = chain.request()
 
-            if (request.url.toString().contains("/image/") &&
-                request.url.queryParameter("type") == null
-            ) {
-                val reader = serverConfig?.reader
-                val presetHash = imagePreset?.split(":")?.last()
+        if (request.url.toString()
+            .contains("/image/") && request.url.queryParameter("type") == null
+        ) {
+            val reader = serverConfig?.reader
+            val presetHash = imagePreset?.split(":")?.last()
 
-                if (reader != null) {
-                    if (presetHash != null && reader.presets.any { it.hash == presetHash }) {
-                        val newRequest =
-                            request.newBuilder().url("${request.url}?type=$presetHash").build()
-                        return@addInterceptor chain.proceed(newRequest)
-                    } else if (reader.defaultPreset != null) {
-                        val newRequest =
-                            request.newBuilder().url("${request.url}?type=${reader.defaultPreset}")
-                                .build()
-                        return@addInterceptor chain.proceed(newRequest)
-                    }
-                } else if (presetHash != null) {
+            if (reader != null) {
+                if (presetHash != null && reader.presets.any { it.hash == presetHash }) {
                     val newRequest =
                         request.newBuilder().url("${request.url}?type=$presetHash").build()
                     return@addInterceptor chain.proceed(newRequest)
+                } else if (reader.defaultPreset != null) {
+                    val newRequest =
+                        request.newBuilder().url("${request.url}?type=${reader.defaultPreset}")
+                            .build()
+                    return@addInterceptor chain.proceed(newRequest)
                 }
+            } else if (presetHash != null) {
+                val newRequest = request.newBuilder().url("${request.url}?type=$presetHash").build()
+                return@addInterceptor chain.proceed(newRequest)
             }
+        }
 
-            return@addInterceptor chain.proceed(request)
-        }.build()
+        return@addInterceptor chain.proceed(request)
+    }.build()
 
-    private val json by lazy { Injekt.get<Json>() }
+    private val json = Json {
+        ignoreUnknownKeys = true
+    }
 
     internal val preferences: SharedPreferences by lazy {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
@@ -128,7 +128,7 @@ open class Faccina(private val suffix: String = "") :
         val data = json.decodeFromString<LibraryResponse>(response.body.string())
 
         return MangasPage(
-            data.archives.map {
+            data.data.map {
                 it.toSManga(baseUrl)
             }.toList(),
             data.page * data.limit < data.total,
@@ -168,6 +168,12 @@ open class Faccina(private val suffix: String = "") :
                     }
                 }
 
+                is SeriesFilter -> {
+                    if (filter.state) {
+                        url.addQueryParameter("series", "1")
+                    }
+                }
+
                 else -> {}
             }
         }
@@ -179,43 +185,44 @@ open class Faccina(private val suffix: String = "") :
 
     // Details
 
-    override fun mangaDetailsRequest(manga: SManga) =
-        GET("$baseUrl/api/g/${getIdFromUrl(manga.url)}", headers)
+    override fun mangaDetailsRequest(manga: SManga) = GET("$baseUrl/api${manga.url}", headers)
+
+    override fun pageListParse(response: Response) = throw UnsupportedOperationException()
 
     override fun mangaDetailsParse(response: Response) =
-        json.decodeFromString<Archive>(response.body.string()).toSManga(baseUrl)
+        json.decodeFromString<Base>(response.body.string()).toSManga(baseUrl)
 
-    override fun getMangaUrl(manga: SManga) = "$baseUrl/g/${getIdFromUrl(manga.url)}"
+    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
 
     // Chapters
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> = Observable.just(
-        listOf(
-            SChapter.create().apply {
-                url = "/g/${getIdFromUrl(manga.url)}/read"
-                name = "1. Chapter"
-            },
-        ),
-    )
+    override fun chapterListRequest(manga: SManga) = GET("$baseUrl/api${manga.url}")
 
-    override fun chapterListParse(response: Response) = throw UnsupportedOperationException()
+    override fun chapterListParse(response: Response) =
+        json.decodeFromString<Base>(response.body.string()).toSChapterList()
+            .sortedByDescending { it.chapter_number }
 
     // Page List
 
-    override fun pageListRequest(chapter: SChapter) =
-        GET("$baseUrl/api/g/${getIdFromUrl(chapter.url)}")
-
-    override fun pageListParse(response: Response) =
-        json.decodeFromString<Archive>(response.body.string()).toPageList(baseUrl)
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
+        val response = client.newCall(GET("$baseUrl/api/g/${getIdFromUrl(chapter.url)}")).execute()
+        return Observable.just(
+            json.decodeFromString<Archive>(response.body.string()).toPageList(baseUrl),
+        )
+    }
 
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
-    override fun getChapterUrl(chapter: SChapter) = "$baseUrl/g/${getIdFromUrl(chapter.url)}"
+    override fun getChapterUrl(chapter: SChapter): String {
+        println("getChapterUrl: $chapter")
+        return "$baseUrl${chapter.url}"
+    }
 
     // Filters
 
     override fun getFilterList() = FilterList(
         SortFilter(),
+        SeriesFilter(),
     )
 
     private class SortFilter : Filter.Sort(
@@ -223,6 +230,8 @@ open class Faccina(private val suffix: String = "") :
         arrayOf("Date released", "Date added", "Title", "Pages"),
         Selection(0, false),
     )
+
+    private class SeriesFilter : Filter.CheckBox("Series", false)
 
     // Preferences
 
@@ -376,8 +385,8 @@ open class Faccina(private val suffix: String = "") :
                                 val isValid = text.isBlank() || validate(text)
 
                                 editText.error = if (!isValid) validationMessage else null
-                                editText.rootView.findViewById<Button>(android.R.id.button1)
-                                    ?.isEnabled = editText.error == null
+                                editText.rootView.findViewById<Button>(android.R.id.button1)?.isEnabled =
+                                    editText.error == null
                             }
                         },
                     )
