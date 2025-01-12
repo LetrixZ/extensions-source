@@ -127,12 +127,19 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     override fun latestUpdatesParse(response: Response): MangasPage {
         val data = json.decodeFromString<LibraryResponse>(response.body.string())
 
-        return MangasPage(
-            data.data.map {
-                it.toSManga(baseUrl)
-            }.toList(),
-            data.page * data.limit < data.total,
-        )
+        if (data.archives != null) {
+            return MangasPage(
+                data.archives.map { it.toSManga(baseUrl) }.toList(),
+                data.page * data.limit < data.total,
+            )
+        } else if (data.series != null) {
+            return MangasPage(
+                data.series.map { it.toSManga(baseUrl) }.toList(),
+                data.page * data.limit < data.total,
+            )
+        } else {
+            throw Exception("No results found")
+        }
     }
 
     // Popular

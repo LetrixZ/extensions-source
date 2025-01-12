@@ -6,10 +6,22 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.buildClassSerialDescriptor
+import kotlinx.serialization.descriptors.element
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonContentPolymorphicSerializer
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable(with = BaseSerializer::class)
 sealed class Base() {
@@ -40,10 +52,10 @@ data class Archive(
     override val hash: String,
     override val title: String,
     override val description: String? = null,
-    val pages: Int,
+    private val pages: Int,
     override val thumbnail: Int,
     override val tags: List<Tag> = emptyList(),
-    val createdAt: String?,
+    private val createdAt: String?,
 ) : Base() {
     override fun toSManga(baseUrl: String) = SManga.create().apply {
         url = "/g/$id"
@@ -90,7 +102,7 @@ class Series(
     override val description: String? = null,
     override val thumbnail: Int,
     override val tags: List<Tag> = emptyList(),
-    val chapters: List<SeriesChapter>,
+    private val chapters: List<SeriesChapter>,
 ) : Base() {
     override fun toSManga(baseUrl: String) = SManga.create().apply {
         url = "/s/$id"
@@ -111,20 +123,10 @@ class Series(
 @Serializable
 class SeriesChapter(
     private val id: Int,
-    private val hash: String,
     private val title: String,
-    val number: Int,
-    private val pages: Int,
+    private val number: Int,
     private val createdAt: String,
 ) {
-    fun toPageList(baseUrl: String) = (1..pages).map { page ->
-        Page(
-            index = page - 1,
-            url = "/g/$id/read/$page",
-            imageUrl = "$baseUrl/image/$hash/$page",
-        )
-    }
-
     fun toSChapter() = SChapter.create().apply {
         url = "/g/$id/read"
         name = "$number. $title"
@@ -133,13 +135,54 @@ class SeriesChapter(
     }
 }
 
-@Serializable
-class LibraryResponse(
-    val data: List<Base> = emptyList(),
+@Serializable(with = LibraryResponseSerializer::class)
+data class LibraryResponse(
+    val archives: List<Archive>? = null,
+    val series: List<Series>? = null,
     val total: Int,
     val page: Int,
     val limit: Int,
 )
+
+object LibraryResponseSerializer : KSerializer<LibraryResponse> {
+    override val descriptor: SerialDescriptor = buildClassSerialDescriptor("LibraryResponse") {
+        element<List<Archive>?>("archives", isOptional = true)
+        element<List<Series>?>("series", isOptional = true)
+        element<Int>("total")
+        element<Int>("page")
+        element<Int>("limit")
+    }
+
+    override fun deserialize(decoder: Decoder): LibraryResponse {
+        val input = decoder as? JsonDecoder ?: throw SerializationException("Expected JsonDecoder")
+
+        val jsonObject = input.decodeJsonElement().jsonObject
+
+        val json = Json {
+            ignoreUnknownKeys = true
+        }
+
+        val archives = jsonObject["archives"]?.let {
+            json.decodeFromJsonElement(ListSerializer(Archive.serializer()), it)
+        }
+
+        val series = jsonObject["series"]?.let {
+            json.decodeFromJsonElement(ListSerializer(Series.serializer()), it)
+        }
+
+        return LibraryResponse(
+            archives = archives,
+            series = series,
+            total = jsonObject["total"]?.jsonPrimitive?.int ?: 0,
+            page = jsonObject["page"]?.jsonPrimitive?.int ?: 0,
+            limit = jsonObject["limit"]?.jsonPrimitive?.int ?: 0,
+        )
+    }
+
+    override fun serialize(encoder: Encoder, value: LibraryResponse) {
+        throw NotImplementedError()
+    }
+}
 
 @Serializable
 class Tag(
