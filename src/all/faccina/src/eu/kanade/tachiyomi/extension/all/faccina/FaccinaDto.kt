@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.all.faccina
 
+import eu.kanade.tachiyomi.extension.all.faccina.FaccinaHelper.generateFilename
 import eu.kanade.tachiyomi.extension.all.faccina.FaccinaHelper.parseDate
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
@@ -28,11 +29,10 @@ sealed class Base() {
     abstract val id: Int
     abstract val hash: String
     abstract val title: String
-    abstract val description: String?
     abstract val thumbnail: Int
     abstract val tags: List<Tag>
 
-    abstract fun toSManga(baseUrl: String): SManga
+    abstract fun toSManga(baseUrl: String, filenameAsTitle: Boolean): SManga
     abstract fun toSChapterList(): List<SChapter>
 }
 
@@ -51,15 +51,19 @@ data class Archive(
     override val id: Int,
     override val hash: String,
     override val title: String,
-    override val description: String? = null,
-    private val pages: Int,
+    val description: String? = null,
+    val pages: Int,
     override val thumbnail: Int,
     override val tags: List<Tag> = emptyList(),
-    private val createdAt: String?,
+    val releasedAt: String? = null,
 ) : Base() {
-    override fun toSManga(baseUrl: String) = SManga.create().apply {
+    override fun toSManga(baseUrl: String, filenameAsTitle: Boolean) = SManga.create().apply {
         url = "/g/$id"
-        title = this@Archive.title
+        title = if (filenameAsTitle) {
+            generateFilename(this@Archive.title, this@Archive.tags)
+        } else {
+            this@Archive.title
+        }
         description = buildString {
             appendLine("Pages: ${this@Archive.pages}")
             if (this@Archive.description != null) {
@@ -81,7 +85,7 @@ data class Archive(
             url = "/g/$id/read"
             name = "1. Chapter"
             chapter_number = 1f
-            date_upload = createdAt?.let { parseDate(it) } ?: 0
+            date_upload = releasedAt?.let { parseDate(it) } ?: 0
         },
     )
 
@@ -99,15 +103,21 @@ class Series(
     override val id: Int,
     override val hash: String,
     override val title: String,
-    override val description: String? = null,
+    val pages: Int,
     override val thumbnail: Int,
     override val tags: List<Tag> = emptyList(),
-    private val chapters: List<SeriesChapter>,
+    val chapters: List<SeriesChapter>,
 ) : Base() {
-    override fun toSManga(baseUrl: String) = SManga.create().apply {
+    override fun toSManga(baseUrl: String, filenameAsTitle: Boolean) = SManga.create().apply {
         url = "/s/$id"
-        title = this@Series.title
-        description = this@Series.description
+        title = if (filenameAsTitle) {
+            generateFilename(this@Series.title, this@Series.tags)
+        } else {
+            this@Series.title
+        }
+        description = buildString {
+            appendLine("Pages: ${this@Series.pages}")
+        }
         thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
         artist = Tag.artists(this@Series.tags).ifEmpty { null }
         author = Tag.circles(this@Series.tags).ifEmpty { null }
@@ -125,13 +135,13 @@ class SeriesChapter(
     private val id: Int,
     private val title: String,
     private val number: Int,
-    private val createdAt: String,
+    private val releasedAt: String? = null,
 ) {
     fun toSChapter() = SChapter.create().apply {
         url = "/g/$id/read"
         name = "$number. $title"
         chapter_number = number.toFloat()
-        date_upload = parseDate(createdAt)
+        date_upload = releasedAt?.let { parseDate(it) } ?: 0
     }
 }
 

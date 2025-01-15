@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
+import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.extension.all.faccina.FaccinaHelper.getIdFromUrl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -109,6 +110,8 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
         )
     }
 
+    private val filenameAsTitle by lazy { preferences.getBoolean(PREF_USE_FILENAME_TITLE, false) }
+
     private val serverConfig: ServerConfig? by lazy {
         try {
             client.newCall(GET("$baseUrl/api/config", headers)).execute().use {
@@ -127,14 +130,14 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     override fun latestUpdatesParse(response: Response): MangasPage {
         val data = json.decodeFromString<LibraryResponse>(response.body.string())
 
-        if (data.archives != null) {
-            return MangasPage(
-                data.archives.map { it.toSManga(baseUrl) }.toList(),
+        return if (data.archives != null) {
+            MangasPage(
+                data.archives.map { it.toSManga(baseUrl, filenameAsTitle) }.toList(),
                 data.page * data.limit < data.total,
             )
         } else if (data.series != null) {
-            return MangasPage(
-                data.series.map { it.toSManga(baseUrl) }.toList(),
+            MangasPage(
+                data.series.map { it.toSManga(baseUrl, filenameAsTitle) }.toList(),
                 data.page * data.limit < data.total,
             )
         } else {
@@ -197,7 +200,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     override fun pageListParse(response: Response) = throw UnsupportedOperationException()
 
     override fun mangaDetailsParse(response: Response) =
-        json.decodeFromString<Base>(response.body.string()).toSManga(baseUrl)
+        json.decodeFromString<Base>(response.body.string()).toSManga(baseUrl, filenameAsTitle)
 
     override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
 
@@ -291,6 +294,15 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
                 toastRestart(screen.context)
                 true
             }
+        }.also(screen::addPreference)
+
+        SwitchPreferenceCompat(screen.context).apply {
+            title = "Filename as title"
+            summary =
+                "Generate a title using the common gallery format including artists, circles and magazine."
+            key = PREF_USE_FILENAME_TITLE
+
+            setDefaultValue(false)
         }.also(screen::addPreference)
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -435,5 +447,6 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
         private const val PREF_HOST_ADDRESS = "HOST_ADDRESS"
         private const val PREF_IMAGE_PRESET = "IMAGE_PRESET"
         private const val PREF_IMAGE_ORIGINAL_PRESET = "Original:"
+        private const val PREF_USE_FILENAME_TITLE = "FILENAME_TITLE"
     }
 }
