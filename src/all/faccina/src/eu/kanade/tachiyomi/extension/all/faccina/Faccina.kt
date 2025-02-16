@@ -17,7 +17,6 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.UnmeteredSource
 import eu.kanade.tachiyomi.source.model.Filter
-import eu.kanade.tachiyomi.source.model.Filter.Sort.Selection
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -80,7 +79,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
                     return@addInterceptor chain.proceed(newRequest)
                 } else if (reader.defaultPreset != null) {
                     val newRequest =
-                        request.newBuilder().url("${request.url}?type=${reader.defaultPreset}")
+                        request.newBuilder().url("${request.url}?type=${reader.defaultPreset.hash}")
                             .build()
                     return@addInterceptor chain.proceed(newRequest)
                 }
@@ -132,12 +131,19 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
 
         return if (data.archives != null) {
             MangasPage(
-                data.archives.map { it.toSManga(baseUrl, filenameAsTitle) }.toList(),
+                data.archives.map {
+                    it.toSManga(
+                        baseUrl,
+                        filenameAsTitle,
+                        serverConfig?.imageServer,
+                    )
+                }.toList(),
                 data.page * data.limit < data.total,
             )
         } else if (data.series != null) {
             MangasPage(
-                data.series.map { it.toSManga(baseUrl, filenameAsTitle) }.toList(),
+                data.series.map { it.toSManga(baseUrl, filenameAsTitle, serverConfig?.imageServer) }
+                    .toList(),
                 data.page * data.limit < data.total,
             )
         } else {
@@ -200,7 +206,8 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     override fun pageListParse(response: Response) = throw UnsupportedOperationException()
 
     override fun mangaDetailsParse(response: Response) =
-        json.decodeFromString<Base>(response.body.string()).toSManga(baseUrl, filenameAsTitle)
+        json.decodeFromString<Base>(response.body.string())
+            .toSManga(baseUrl, filenameAsTitle, serverConfig?.imageServer)
 
     override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
 
@@ -217,14 +224,14 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
         val response = client.newCall(GET("$baseUrl/api/g/${getIdFromUrl(chapter.url)}")).execute()
         return Observable.just(
-            json.decodeFromString<Archive>(response.body.string()).toPageList(baseUrl),
+            json.decodeFromString<Archive>(response.body.string())
+                .toPageList(baseUrl, serverConfig?.imageServer),
         )
     }
 
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     override fun getChapterUrl(chapter: SChapter): String {
-        println("getChapterUrl: $chapter")
         return "$baseUrl${chapter.url}"
     }
 

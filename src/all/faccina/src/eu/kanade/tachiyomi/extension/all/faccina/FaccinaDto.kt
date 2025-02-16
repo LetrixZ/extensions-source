@@ -32,7 +32,7 @@ sealed class Base() {
     abstract val thumbnail: Int
     abstract val tags: List<Tag>
 
-    abstract fun toSManga(baseUrl: String, filenameAsTitle: Boolean): SManga
+    abstract fun toSManga(baseUrl: String, filenameAsTitle: Boolean, imageServer: String?): SManga
     abstract fun toSChapterList(): List<SChapter>
 }
 
@@ -57,28 +57,29 @@ data class Archive(
     override val tags: List<Tag> = emptyList(),
     val releasedAt: String? = null,
 ) : Base() {
-    override fun toSManga(baseUrl: String, filenameAsTitle: Boolean) = SManga.create().apply {
-        url = "/g/$id"
-        title = if (filenameAsTitle) {
-            generateFilename(this@Archive.title, this@Archive.tags)
-        } else {
-            this@Archive.title
-        }
-        description = buildString {
-            appendLine("Pages: ${this@Archive.pages}")
-            if (this@Archive.description != null) {
-                appendLine()
-                appendLine(this@Archive.description)
+    override fun toSManga(baseUrl: String, filenameAsTitle: Boolean, imageServer: String?) =
+        SManga.create().apply {
+            url = "/g/$id"
+            title = if (filenameAsTitle) {
+                generateFilename(this@Archive.title, this@Archive.tags)
+            } else {
+                this@Archive.title
             }
+            description = buildString {
+                appendLine("Pages: ${this@Archive.pages}")
+                if (this@Archive.description != null) {
+                    appendLine()
+                    appendLine(this@Archive.description)
+                }
+            }
+            thumbnail_url = "${imageServer ?: baseUrl}/image/$hash/$thumbnail?type=cover"
+            artist = Tag.artists(this@Archive.tags).ifEmpty { null }
+            author = Tag.circles(this@Archive.tags).ifEmpty { null }
+            genre = this@Archive.tags.joinToString(", ")
+            status = SManga.COMPLETED
+            update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
+            initialized = true
         }
-        thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
-        artist = Tag.artists(this@Archive.tags).ifEmpty { null }
-        author = Tag.circles(this@Archive.tags).ifEmpty { null }
-        genre = this@Archive.tags.joinToString(", ")
-        status = SManga.COMPLETED
-        update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
-        initialized = true
-    }
 
     override fun toSChapterList() = listOf(
         SChapter.create().apply {
@@ -89,11 +90,11 @@ data class Archive(
         },
     )
 
-    fun toPageList(baseUrl: String) = (1..pages).map { page ->
+    fun toPageList(baseUrl: String, imageServer: String?) = (1..pages).map { page ->
         Page(
             index = page - 1,
             url = "/g/$id/read/$page",
-            imageUrl = "$baseUrl/image/$hash/$page",
+            imageUrl = "${imageServer ?: baseUrl}/image/$hash/$page",
         )
     }
 }
@@ -108,24 +109,25 @@ class Series(
     override val tags: List<Tag> = emptyList(),
     val chapters: List<SeriesChapter>,
 ) : Base() {
-    override fun toSManga(baseUrl: String, filenameAsTitle: Boolean) = SManga.create().apply {
-        url = "/s/$id"
-        title = if (filenameAsTitle) {
-            generateFilename(this@Series.title, this@Series.tags)
-        } else {
-            this@Series.title
+    override fun toSManga(baseUrl: String, filenameAsTitle: Boolean, imageServer: String?) =
+        SManga.create().apply {
+            url = "/s/$id"
+            title = if (filenameAsTitle) {
+                generateFilename(this@Series.title, this@Series.tags)
+            } else {
+                this@Series.title
+            }
+            description = buildString {
+                appendLine("Pages: ${this@Series.pages}")
+            }
+            thumbnail_url = "${imageServer ?: baseUrl}/image/$hash/$thumbnail?type=cover"
+            artist = Tag.artists(this@Series.tags).ifEmpty { null }
+            author = Tag.circles(this@Series.tags).ifEmpty { null }
+            genre = this@Series.tags.joinToString(", ")
+            status = SManga.UNKNOWN
+            update_strategy = UpdateStrategy.ALWAYS_UPDATE
+            initialized = true
         }
-        description = buildString {
-            appendLine("Pages: ${this@Series.pages}")
-        }
-        thumbnail_url = "$baseUrl/image/$hash/$thumbnail?type=cover"
-        artist = Tag.artists(this@Series.tags).ifEmpty { null }
-        author = Tag.circles(this@Series.tags).ifEmpty { null }
-        genre = this@Series.tags.joinToString(", ")
-        status = SManga.UNKNOWN
-        update_strategy = UpdateStrategy.ALWAYS_UPDATE
-        initialized = true
-    }
 
     override fun toSChapterList() = chapters.map { it -> it.toSChapter() }
 }
@@ -230,6 +232,7 @@ class Tag(
 
 @Serializable
 class ServerConfig(
+    val imageServer: String?,
     val reader: Reader,
 )
 
