@@ -232,14 +232,14 @@ class Tag(
 
 @Serializable
 class ServerConfig(
-    val imageServer: String?,
+    val imageServer: String? = null,
     val reader: Reader,
 )
 
 @Serializable
 class Reader(
     val presets: List<ReaderPreset>,
-    val defaultPreset: ReaderPreset?,
+    val defaultPreset: ReaderPreset? = null,
     val allowOriginal: Boolean,
 )
 
