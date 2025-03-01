@@ -107,7 +107,7 @@ open class Kemono(
         }
 
         var mangas = mangasCache
-        if (page == 1) {
+        if (page == 1 || mangasCache.isEmpty()) {
             var favourites: List<KemonoFavouritesDto> = emptyList()
             if (fav != null) {
                 val favores = client.newCall(GET("$baseUrl/$apiPath/account/favorites", headers)).execute()
@@ -132,7 +132,7 @@ open class Kemono(
 
                 includeType && !excludeType && isFavourited &&
                     regularSearch
-            }.also { mangasCache = mangas }
+            }.also { mangasCache = it }
         }
 
         val sorted = when (sort.first) {
@@ -233,8 +233,8 @@ open class Kemono(
         GET("$baseUrl/$apiPath${chapter.url}", headers)
 
     override fun pageListParse(response: Response): List<Page> {
-        val post: KemonoPostDto = response.parseAs()
-        return post.images.mapIndexed { i, path -> Page(i, imageUrl = baseUrl + path) }
+        val postData: KemonoPostDtoWrapped = response.parseAs()
+        return postData.post.images.mapIndexed { i, path -> Page(i, imageUrl = baseUrl + path) }
     }
 
     override fun imageRequest(page: Page): Request {

@@ -37,11 +37,13 @@ class VlogTruyen : ParsedHttpSource(), ConfigurableSource {
 
     override val lang = "vi"
 
-    override val name = "VlogTruyen"
+    override val name = "ThichDoc"
 
     override val supportsLatest = true
 
-    private val defaultBaseUrl = "https://vlogtruyen34.com"
+    override val id: Long = 6425642624422299254
+
+    private val defaultBaseUrl = "https://thichdoc1.com"
 
     override val baseUrl by lazy { getPrefBaseUrl() }
 
@@ -159,11 +161,11 @@ class VlogTruyen : ParsedHttpSource(), ConfigurableSource {
     override fun pageListParse(document: Document): List<Page> {
         val loginRequired = document.selectFirst(".area-show-content span")
 
-        if (loginRequired != null) {
-            throw Exception("${loginRequired.text()} Hãy đăng nhập trong WebView.")
+        if (loginRequired!!.text() == "Xin lỗi, bạn cần đăng nhập để đọc được chapter này!") {
+            throw Exception("${loginRequired.text()} \n Hãy đăng nhập trong WebView.")
         }
-        return document.select(".comicDetails img").mapIndexed { i, e ->
-            Page(i, imageUrl = e.attr("abs:src"))
+        return document.select("img.image-commic").mapIndexed { i, e ->
+            Page(i, imageUrl = e.absUrl("src"))
         }
     }
 

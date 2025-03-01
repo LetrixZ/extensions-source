@@ -11,7 +11,7 @@ import okhttp3.Request
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
-class MintManga : GroupLe("MintManga", "https://1.mintmanga.com", "ru") {
+class MintManga : GroupLe("MintManga", "https://2.mintmanga.one", "ru") {
 
     override val id: Long = 6
 
