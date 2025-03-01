@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.all.faccina
 
-import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.Editable
@@ -23,6 +22,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,8 +34,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
 
 open class Faccina(private val suffix: String = "") : ConfigurableSource, UnmeteredSource,
@@ -96,9 +94,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
         ignoreUnknownKeys = true
     }
 
-    internal val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    internal val preferences: SharedPreferences by getPreferencesLazy()
 
     private val displayName by lazy { preferences.getString(PREF_DISPLAY_NAME, "")!! }
 
@@ -115,6 +111,10 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
         try {
             client.newCall(GET("$baseUrl/api/config", headers)).execute().use {
                 json.decodeFromStream<ServerConfig>(it.body.byteStream())
+            }.apply {
+                if (imageServer.isNullOrEmpty()) {
+                    imageServer = null
+                }
             }
         } catch (ex: Exception) {
             ex.printStackTrace()

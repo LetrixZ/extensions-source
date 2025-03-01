@@ -232,7 +232,7 @@ class Tag(
 
 @Serializable
 class ServerConfig(
-    val imageServer: String? = null,
+    var imageServer: String? = null,
     val reader: Reader,
 )
 
