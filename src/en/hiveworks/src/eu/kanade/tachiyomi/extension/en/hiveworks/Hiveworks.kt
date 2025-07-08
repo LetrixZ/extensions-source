@@ -39,6 +39,28 @@ class Hiveworks : ParsedHttpSource() {
         .readTimeout(1, TimeUnit.MINUTES)
         .retryOnConnectionFailure(true)
         .followRedirects(true)
+        .addNetworkInterceptor { chain ->
+            val request = chain.request()
+            if (!request.url.toString().contains("smbc-comics")) {
+                return@addNetworkInterceptor chain.proceed(request)
+            }
+
+            val response = chain.proceed(request)
+            // As of March 2025, SMBC chapter list page returns status code 500 even
+            // though it still has correct data. Do not throw an error in this case.
+            //
+            // I reported this error to SMBC on 2025-05-28 and it was not fixed by
+            // 2025-06-11, but even if it is fixed eventually, the same problem might
+            // occur again in the future.
+            if (response.code == 500) {
+                val newResponse = response.newBuilder()
+                    .code(200)
+                    .build()
+                newResponse
+            } else {
+                response
+            }
+        }
         .build()
 
     // Popular
@@ -506,7 +528,7 @@ class Hiveworks : ParsedHttpSource() {
             charCount += i.length + 1
         }
 
-        return "https://fakeimg.pl/1500x2126/ffffff/000000/?text=$builder&font_size=42&font=museo"
+        return "https://fakeimg.ryd.tools/1500x2126/ffffff/000000/?text=$builder&font_size=42&font=museo"
     }
 
     // Used to throw custom error codes for http codes
