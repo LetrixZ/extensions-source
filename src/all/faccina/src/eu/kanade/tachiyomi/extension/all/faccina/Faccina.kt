@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.all.faccina
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.Editable
@@ -31,13 +32,97 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 open class Faccina(private val suffix: String = "") : ConfigurableSource, UnmeteredSource,
     HttpSource() {
+
+    private fun OkHttpClient.Builder.ignoreAllSSLErrors(): OkHttpClient.Builder {
+        val naiveTrustManager = @SuppressLint("CustomX509TrustManager")
+        object : X509TrustManager {
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            override fun checkClientTrusted(certs: Array<X509Certificate>, authType: String) = Unit
+            override fun checkServerTrusted(certs: Array<X509Certificate>, authType: String) = Unit
+        }
+
+        val insecureSocketFactory = SSLContext.getInstance("SSL").apply {
+            val trustAllCerts = arrayOf<TrustManager>(naiveTrustManager)
+            init(null, trustAllCerts, SecureRandom())
+        }.socketFactory
+
+        sslSocketFactory(insecureSocketFactory, naiveTrustManager)
+        hostnameVerifier { _, _ -> true }
+        return this
+    }
+
+    private fun OkHttpClient.Builder.headersInterceptor(): OkHttpClient.Builder {
+        addInterceptor { chain ->
+            val request = chain.request()
+
+            if (httpHeaders.isBlank()) {
+                return@addInterceptor chain.proceed(request)
+            }
+
+            val newHeaders = headers.newBuilder()
+
+            httpHeaders.lineSequence().mapNotNull { line ->
+                val index = line.indexOf(':')
+                if (index == -1) return@mapNotNull null
+                val name = line.substring(0, index).trim()
+                val value = line.substring(index + 1).trim()
+                if (name.isNotEmpty() && value.isNotEmpty()) name to value else null
+            }.forEach { (name, value) ->
+                newHeaders[name] = value
+            }
+
+            return@addInterceptor chain.proceed(
+                request.newBuilder().headers(newHeaders.build()).build(),
+            )
+        }
+
+        return this
+    }
+
+    private fun OkHttpClient.Builder.imageInterceptor(): OkHttpClient.Builder {
+        addInterceptor { chain ->
+            val request = chain.request()
+
+            if (request.url.toString()
+                .contains("/image/") && request.url.queryParameter("type") == null
+            ) {
+                val reader = serverConfig?.reader
+                val presetHash = imagePreset?.split(":")?.last()
+
+                if (reader != null) {
+                    if (presetHash != null && reader.presets.any { it.hash == presetHash }) {
+                        val newRequest =
+                            request.newBuilder().url("${request.url}?type=$presetHash").build()
+                        return@addInterceptor chain.proceed(newRequest)
+                    } else if (reader.defaultPreset != null) {
+                        val newRequest = request.newBuilder()
+                            .url("${request.url}?type=${reader.defaultPreset.hash}").build()
+                        return@addInterceptor chain.proceed(newRequest)
+                    }
+                } else if (presetHash != null) {
+                    val newRequest =
+                        request.newBuilder().url("${request.url}?type=$presetHash").build()
+                    return@addInterceptor chain.proceed(newRequest)
+                }
+            }
+
+            return@addInterceptor chain.proceed(request)
+        }
+        return this
+    }
 
     override val baseUrl by lazy {
         preferences.getString(PREF_HOST_ADDRESS, "")!!.removeSuffix("/")
@@ -61,34 +146,9 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
             .reduce(Long::or) and Long.MAX_VALUE
     }
 
-    override val client = network.cloudflareClient.newBuilder().addInterceptor { chain ->
-        val request = chain.request()
-
-        if (request.url.toString()
-            .contains("/image/") && request.url.queryParameter("type") == null
-        ) {
-            val reader = serverConfig?.reader
-            val presetHash = imagePreset?.split(":")?.last()
-
-            if (reader != null) {
-                if (presetHash != null && reader.presets.any { it.hash == presetHash }) {
-                    val newRequest =
-                        request.newBuilder().url("${request.url}?type=$presetHash").build()
-                    return@addInterceptor chain.proceed(newRequest)
-                } else if (reader.defaultPreset != null) {
-                    val newRequest =
-                        request.newBuilder().url("${request.url}?type=${reader.defaultPreset.hash}")
-                            .build()
-                    return@addInterceptor chain.proceed(newRequest)
-                }
-            } else if (presetHash != null) {
-                val newRequest = request.newBuilder().url("${request.url}?type=$presetHash").build()
-                return@addInterceptor chain.proceed(newRequest)
-            }
-        }
-
-        return@addInterceptor chain.proceed(request)
-    }.build()
+    override val client =
+        network.cloudflareClient.newBuilder().ignoreAllSSLErrors().headersInterceptor()
+            .imageInterceptor().build()
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -97,6 +157,8 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     internal val preferences: SharedPreferences by getPreferencesLazy()
 
     private val displayName by lazy { preferences.getString(PREF_DISPLAY_NAME, "")!! }
+
+    private val httpHeaders by lazy { preferences.getString(PREF_HTTP_HEADERS, "")!! }
 
     private val imagePreset by lazy {
         preferences.getString(
@@ -213,7 +275,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
 
     // Chapters
 
-    override fun chapterListRequest(manga: SManga) = GET("$baseUrl/api${manga.url}")
+    override fun chapterListRequest(manga: SManga) = GET("$baseUrl/api${manga.url}", headers)
 
     override fun chapterListParse(response: Response) =
         json.decodeFromString<Base>(response.body.string()).toSChapterList()
@@ -222,7 +284,8 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     // Page List
 
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        val response = client.newCall(GET("$baseUrl/api/g/${getIdFromUrl(chapter.url)}")).execute()
+        val response =
+            client.newCall(GET("$baseUrl/api/g/${getIdFromUrl(chapter.url)}", headers)).execute()
         return Observable.just(
             json.decodeFromString<Archive>(response.body.string())
                 .toPageList(baseUrl, serverConfig?.imageServer),
@@ -286,6 +349,16 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
             validate = { it.toHttpUrlOrNull() != null && !it.endsWith("/") },
             validationMessage = "The URL is invalid, malformed, or ends with a slash",
             key = PREF_HOST_ADDRESS,
+            restartRequired = true,
+        )
+
+        screen.addEditTextPreference(
+            title = "HTTP headers",
+            default = "",
+            summary = "HTTP headers to use when making requests",
+            dialogMessage = "Every header should be separated by a new line.",
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE,
+            key = PREF_HTTP_HEADERS,
             restartRequired = true,
         )
 
@@ -440,7 +513,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
     private fun toastRestart(context: Context) {
         Toast.makeText(
             context,
-            "Restart Tachiyomi to apply new settings.",
+            "Restart the app to apply new settings.",
             Toast.LENGTH_LONG,
         ).show()
     }
@@ -452,6 +525,7 @@ open class Faccina(private val suffix: String = "") : ConfigurableSource, Unmete
 
         private const val PREF_DISPLAY_NAME = "DISPLAY_NAME"
         private const val PREF_HOST_ADDRESS = "HOST_ADDRESS"
+        private const val PREF_HTTP_HEADERS = "HTTP_HEADERS"
         private const val PREF_IMAGE_PRESET = "IMAGE_PRESET"
         private const val PREF_IMAGE_ORIGINAL_PRESET = "Original:"
         private const val PREF_USE_FILENAME_TITLE = "FILENAME_TITLE"
