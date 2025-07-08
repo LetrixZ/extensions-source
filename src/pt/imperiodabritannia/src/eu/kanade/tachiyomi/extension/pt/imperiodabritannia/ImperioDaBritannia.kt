@@ -16,6 +16,7 @@ class ImperioDaBritannia : Madara(
 
     override val client: OkHttpClient = super.client.newBuilder()
         .rateLimit(1, 2, TimeUnit.SECONDS)
+        .readTimeout(1, TimeUnit.MINUTES)
         .build()
 
     override val useNewChapterEndpoint = true
