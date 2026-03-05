@@ -23,6 +23,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.textinterceptor.TextInterceptor
+import keiyoushi.lib.textinterceptor.TextInterceptorHelper
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.tryParse
@@ -42,7 +44,9 @@ import rx.Observable
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class Mehgazone : ConfigurableSource, HttpSource() {
+class Mehgazone :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "Mehgazone"
 
@@ -55,6 +59,7 @@ class Mehgazone : ConfigurableSource, HttpSource() {
     override val client: OkHttpClient by lazy {
         network.cloudflareClient
             .newBuilder()
+            .addInterceptor(TextInterceptor())
             .addInterceptor(authInterceptor)
             .build()
     }
@@ -62,10 +67,6 @@ class Mehgazone : ConfigurableSource, HttpSource() {
     private val uploadDateFormat: SimpleDateFormat by lazy {
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
     }
-
-    private val textToImageURL = "https://fakeimg.ryd.tools/1500x2126/ffffff/000000/?font=museo&font_size=42".toHttpUrl()
-
-    private fun String.image() = textToImageURL.newBuilder().setQueryParameter("text", this).build().toString()
 
     private fun String.unescape() = unescapeEntities(this, false)
 
@@ -106,8 +107,7 @@ class Mehgazone : ConfigurableSource, HttpSource() {
         false,
     )
 
-    override fun mangaDetailsRequest(manga: SManga) =
-        GET(manga.url, headers)
+    override fun mangaDetailsRequest(manga: SManga) = GET(manga.url, headers)
 
     override fun mangaDetailsParse(response: Response): SManga = SManga.create().apply {
         val html = response.asJsoup()
@@ -126,11 +126,10 @@ class Mehgazone : ConfigurableSource, HttpSource() {
 
     override fun chapterListRequest(manga: SManga): Request = chapterListRequest(manga.url, 1)
 
-    private fun chapterListRequest(url: String, page: Int): Request =
-        GET(
-            "$url/wp-json/wp/v2/posts?per_page=100&page=$page&_fields=id,title,date_gmt,excerpt",
-            headers,
-        )
+    private fun chapterListRequest(url: String, page: Int): Request = GET(
+        "$url/wp-json/wp/v2/posts?per_page=100&page=$page&_fields=id,title,date_gmt,excerpt",
+        headers,
+    )
 
     private fun hasNextPage(headers: Headers, responseSize: Int, page: Int): Boolean {
         val pages = headers["X-Wp-Totalpages"]?.toInt()
@@ -172,19 +171,6 @@ class Mehgazone : ConfigurableSource, HttpSource() {
             }.reversed()
     }
 
-    // Adapted from the xkcd source's wordWrap function
-    private fun wordWrap(text: String) = buildString {
-        var charCount = 0
-        text.replace('\n', ' ').split(' ').forEach { w ->
-            if (charCount > 25) {
-                append("\n")
-                charCount = 0
-            }
-            append(w).append(' ')
-            charCount += w.length + 1
-        }
-    }
-
     override fun pageListRequest(chapter: SChapter): Request {
         val chapterUrl = chapter.url.toHttpUrl()
         val pageListUrl = chapterUrl
@@ -208,7 +194,7 @@ class Mehgazone : ConfigurableSource, HttpSource() {
                 Page(
                     images.size,
                     "",
-                    wordWrap(Jsoup.parseBodyFragment(apiResponse.excerpt.rendered.unescape()).text()).image(),
+                    TextInterceptorHelper.createUrl("", Jsoup.parseBodyFragment(apiResponse.excerpt.rendered.unescape()).text()),
                 ),
             )
         }
@@ -310,13 +296,12 @@ class Mehgazone : ConfigurableSource, HttpSource() {
         return null
     }
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> =
-        fetchPopularManga(0).map {
-            MangasPage(
-                it.mangas.filter { m -> m.title.contains(query) },
-                false,
-            )
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = fetchPopularManga(0).map {
+        MangasPage(
+            it.mangas.filter { m -> m.title.contains(query) },
+            false,
+        )
+    }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 

@@ -1,10 +1,18 @@
 package eu.kanade.tachiyomi.extension.all.ninemanga
 
+import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
 import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.parseAs
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.text.ParseException
 import java.text.SimpleDateFormat
@@ -23,7 +31,7 @@ class NineMangaFactory : SourceFactory {
     )
 }
 
-class NineMangaEn : NineManga("NineMangaEn", "https://en.ninemanga.com", "en") {
+class NineMangaEn : NineManga("NineMangaEn", "https://www.ninemanga.com", "en") {
     override fun latestUpdatesFromElement(element: Element) = SManga.create().apply {
         element.select("a.bookname").let {
             url = it.attr("abs:href").substringAfter("ninemanga.com")
@@ -35,14 +43,69 @@ class NineMangaEn : NineManga("NineMangaEn", "https://en.ninemanga.com", "en") {
 
 class NineMangaEs : NineManga("NineMangaEs", "https://es.ninemanga.com", "es") {
     // ES, FR, RU don't return results for searches with an apostrophe
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return super.searchMangaRequest(page, query.substringBefore("\'"), filters)
-    }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = super.searchMangaRequest(page, query.substringBefore("\'"), filters)
 
     override fun parseStatus(status: String) = when {
         status.contains("En curso") -> SManga.ONGOING
         status.contains("Completado") -> SManga.COMPLETED
         else -> SManga.UNKNOWN
+    }
+
+    override fun pageListRequest(chapter: SChapter): Request {
+        val headers = headers.newBuilder()
+            .set("Referer", "$baseUrl/")
+            .build()
+
+        return GET(baseUrl + chapter.url, headers)
+    }
+
+    private val imgRegex = Regex("""all_imgs_url\s*:\s*\[\s*([^]]*)\s*,\s*]""")
+    private val redirectRegex = Regex("""window\.location\.href\s*=\s*["'](.*?)["']""")
+
+    override fun pageListParse(document: Document): List<Page> {
+        val serverUrl = document.selectFirst("section.section div.post-content-body > a")?.absUrl("href")
+
+        if (serverUrl != null) {
+            val serverHeaders = headers.newBuilder()
+                .set("Referer", document.baseUri())
+                .build()
+            return pageListParse(client.newCall(GET(serverUrl, serverHeaders)).execute().asJsoup())
+        }
+
+        val redirectScript = document.selectFirst("body > script:containsData(window.location.href)")?.data()
+
+        if (redirectScript != null) {
+            val documentLocation = document.location()
+            val redirectUrl = redirectRegex.find(redirectScript)
+                ?.groupValues?.get(1)
+                ?.let { path ->
+                    path.toHttpUrlOrNull()
+                        ?: documentLocation.toHttpUrl().newBuilder()
+                            .encodedPath(path)
+                            .build()
+                } ?: return super.pageListParse(document)
+
+            val headers = headers.newBuilder()
+                .set("Referer", documentLocation)
+                .build()
+
+            val redirectedDocument = client.newCall(
+                GET(redirectUrl, headers),
+            ).execute().asJsoup()
+
+            return pageListParse(redirectedDocument)
+        }
+
+        val script = document.selectFirst("script:containsData(all_imgs_url)")?.data()
+            ?: return super.pageListParse(document)
+
+        val images = imgRegex.find(script)?.groupValues?.get(1)
+            ?.let { "[$it]".parseAs<List<String>>() }
+            ?: throw Exception("Image list not found")
+
+        return images.mapIndexed { idx, img ->
+            Page(idx, imageUrl = img)
+        }
     }
 
     override fun parseChapterDate(date: String) = parseChapterDateByLang(date)
@@ -266,13 +329,12 @@ class NineMangaBr : NineManga("NineMangaBr", "https://br.ninemanga.com", "pt-BR"
 
 class NineMangaRu : NineManga("NineMangaRu", "https://ru.ninemanga.com", "ru") {
     // ES, FR, RU don't return results for searches with an apostrophe
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return super.searchMangaRequest(page, query.substringBefore("\'"), filters)
-    }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = super.searchMangaRequest(page, query.substringBefore("\'"), filters)
 
     override fun parseStatus(status: String) = when {
         // No Ongoing status
         status.contains("завершенный") -> SManga.COMPLETED
+
         else -> SManga.UNKNOWN
     }
 
@@ -453,9 +515,7 @@ class NineMangaIt : NineManga("NineMangaIt", "https://it.ninemanga.com", "it") {
 
 class NineMangaFr : NineManga("NineMangaFr", "https://fr.ninemanga.com", "fr") {
     // ES, FR, RU don't return results for searches with an apostrophe
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return super.searchMangaRequest(page, query.substringBefore("\'"), filters)
-    }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = super.searchMangaRequest(page, query.substringBefore("\'"), filters)
 
     override fun parseStatus(status: String) = when {
         status.contains("En cours") -> SManga.ONGOING
@@ -768,22 +828,33 @@ fun parseChapterDateByLang(date: String): Long {
             val timeAgo = Integer.parseInt(dateWords[0])
             return Calendar.getInstance().apply {
                 when (dateWords[1]) {
-                    "minutos" -> Calendar.MINUTE // ES
+                    "minutos" -> Calendar.MINUTE
+
+                    // ES
                     "horas" -> Calendar.HOUR
 
                     // "minutos" -> Calendar.MINUTE // BR
                     "hora" -> Calendar.HOUR
 
-                    "минут" -> Calendar.MINUTE // RU
+                    "минут" -> Calendar.MINUTE
+
+                    // RU
                     "часа" -> Calendar.HOUR
 
-                    "Stunden" -> Calendar.HOUR // DE
+                    "Stunden" -> Calendar.HOUR
 
-                    "minuti" -> Calendar.MINUTE // IT
+                    // DE
+
+                    "minuti" -> Calendar.MINUTE
+
+                    // IT
                     "ore" -> Calendar.HOUR
 
-                    "minutes" -> Calendar.MINUTE // FR
+                    "minutes" -> Calendar.MINUTE
+
+                    // FR
                     "heures" -> Calendar.HOUR
+
                     else -> null
                 }?.let {
                     add(it, -timeAgo)

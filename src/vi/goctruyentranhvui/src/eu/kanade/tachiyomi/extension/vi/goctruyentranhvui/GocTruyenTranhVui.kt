@@ -1,8 +1,19 @@
 package eu.kanade.tachiyomi.extension.vi.goctruyentranhvui
 
+import android.annotation.SuppressLint
+import android.app.Application
+import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -10,6 +21,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -17,17 +29,25 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
-class GocTruyenTranhVui : HttpSource() {
+class GocTruyenTranhVui :
+    HttpSource(),
+    ConfigurableSource {
     override val lang = "vi"
 
-    override val baseUrl = "https://goctruyentranhvui17.com"
+    override val baseUrl = "https://goctruyentranhvui21.com"
 
     override val name = "Goc Truyen Tranh Vui"
 
     private val apiUrl = "$baseUrl/api/v2"
 
     override val supportsLatest: Boolean = true
+
+    private val preferences: SharedPreferences = getPreferences()
 
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .rateLimit(3)
@@ -36,13 +56,19 @@ class GocTruyenTranhVui : HttpSource() {
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
+    private val xhrHeaders by lazy {
+        headersBuilder()
+            .set("X-Requested-With", "XMLHttpRequest")
+            .build()
+    }
+
     override fun popularMangaRequest(page: Int): Request = GET(
         apiUrl.toHttpUrl().newBuilder().apply {
             addPathSegments("home/filter")
             addQueryParameter("p", (page - 1).toString())
             addQueryParameter("value", "recommend")
         }.build(),
-        headers,
+        xhrHeaders,
     )
 
     override fun popularMangaParse(response: Response): MangasPage {
@@ -53,7 +79,7 @@ class GocTruyenTranhVui : HttpSource() {
 
     override fun latestUpdatesRequest(page: Int): Request = GET(
         "$apiUrl/search?p=${page - 1}&orders%5B%5D=recentDate",
-        headers,
+        xhrHeaders,
     )
 
     override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
@@ -63,12 +89,15 @@ class GocTruyenTranhVui : HttpSource() {
     override fun chapterListRequest(manga: SManga): Request {
         val mangaId = manga.url.substringBefore(':')
         val slug = manga.url.substringAfter(':')
-        return GET("$baseUrl/api/comic/$mangaId/chapter?limit=-1#$slug", headers)
+        return GET("$baseUrl/api/comic/$mangaId/chapter?limit=-1#$slug", xhrHeaders)
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val slug = response.request.url.fragment!!
-        val chapterJson = response.parseAs<ResultDto<ChapterListDto>>()
+        val chapterJson = runCatching { response.parseAs<ResultDto<ChapterListDto>>() }.getOrNull()
+        if (chapterJson == null || chapterJson.result.chapters.isEmpty()) {
+            throw Exception("Có thể: Phiên làm việc đã hết hạn, vui lòng tải lại.")
+        }
         return chapterJson.result.chapters.map { it.toSChapter(slug) }
     }
 
@@ -76,12 +105,12 @@ class GocTruyenTranhVui : HttpSource() {
 
     override fun mangaDetailsParse(response: Response): SManga = SManga.create().apply {
         val document = response.asJsoup()
-        title = document.selectFirst(".v-card-title")!!.text()
+        title = document.select(".v-card-title").text()
         genre = document.select(".group-content > .v-chip-link").joinToString { it.text() }
-        thumbnail_url = document.selectFirst("img.image")!!.absUrl("src")
-        status = parseStatus(document.selectFirst(".mb-1:contains(Trạng thái:) span")!!.text())
-        author = document.selectFirst(".mb-1:contains(Tác giả:) span")!!.text()
-        description = document.selectFirst(".v-card-text")!!.text()
+        thumbnail_url = document.selectFirst("img.image")?.absUrl("src")
+        status = parseStatus(document.selectFirst(".mb-1:contains(Trạng thái:) span")?.text())
+        author = document.selectFirst(".mb-1:contains(Tác giả:) span")?.text()
+        description = document.select(".v-card-text").joinToString { it.wholeText().trim() }
     }
 
     private fun parseStatus(status: String?) = when {
@@ -91,36 +120,89 @@ class GocTruyenTranhVui : HttpSource() {
         else -> SManga.UNKNOWN
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        val html = response.body.string()
-        val pattern = Regex("chapterJson:\\s*`(.*?)`")
-        val match = pattern.find(html) ?: throw Exception("Không tìm thấy Json") // find json
-        val jsonPage = match.groups[1]!!.value
+    override fun pageListRequest(chapter: SChapter): Request {
+        val url = chapter.url
+        val slug = url.substringAfter("/truyen/").substringBefore("/chuong-")
+        val numberChapter = url.substringAfter("/chuong-").substringBefore("#")
+        val comicId = url.substringAfter("#")
 
-        val imageUrls = if (jsonPage.isEmpty()) {
-            val regexMangaId = Regex("""comic\s*=\s*\{\s*id:\s*"(\d{10})"""")
-            val matchId = regexMangaId.find(html) ?: throw Exception("Không tìm thấy mangaId") // find mangaId
-            val mangaId = matchId.groups[1]!!.value
-            val nameEn = response.request.url.toString().substringAfter("/truyen/").substringBefore("/")
-            val chapterNumber = response.request.url.toString().substringAfterLast("chuong-")
-            val body = FormBody.Builder().add("comicId", mangaId)
-                .add("chapterNumber", chapterNumber).add("nameEn", nameEn).build()
-            val request = POST("$baseUrl/api/chapter/auth", pageHeaders, body)
-            client.newCall(request).execute().parseAs<ResultDto<ImageListDto>>().result.data
-        } else {
-            jsonPage.parseAs<ImageListWrapper>().body.result.data
+        val body = FormBody.Builder()
+            .add("comicId", comicId)
+            .add("chapterNumber", numberChapter)
+            .add("nameEn", slug)
+            .build()
+
+        return POST("$baseUrl/api/chapter/loadAll", pageHeaders, body)
+    }
+
+    override fun pageListParse(response: Response): List<Page> {
+        val jsonResult = runCatching { response.parseAs<ResultDto<ImageListDto>>() }
+        jsonResult.onFailure {
+            throw Exception("Có thể: Phiên làm việc đã hết hạn, vui lòng tải lại")
         }
-        return imageUrls.mapIndexed { i, url ->
-            val finalUrl = if (url.startsWith("/image/")) { baseUrl + url } else { url }
+
+        val imageList = jsonResult.getOrThrow().result.data
+        if (imageList.isNullOrEmpty()) {
+            throw Exception("Chưa đăng nhập trong WebView. Hoặc không có ảnh!")
+        }
+
+        return imageList.mapIndexed { i, url ->
+            val finalUrl = if (url.startsWith("/image/")) {
+                baseUrl + url
+            } else {
+                url
+            }
             Page(i, imageUrl = finalUrl)
         }
     }
+
     private val pageHeaders by lazy {
-        headersBuilder()
-            .add("X-Requested-With", "XMLHttpRequest")
-            .add("Authorization", TOKEN_KEY)
-            .build()
+        token?.let {
+            headersBuilder()
+                .set("X-Requested-With", "XMLHttpRequest")
+                .set("Origin", baseUrl)
+                .set("Authorization", it)
+                .build()
+        } ?: xhrHeaders
     }
+
+    private var _token: String? = null
+
+    @get:SuppressLint("SetJavaScriptEnabled")
+    val token: String?
+        get() {
+            _token?.also { return it }
+            val handler = Handler(Looper.getMainLooper())
+            val latch = CountDownLatch(1)
+            if (!customToken().isNullOrBlank()) {
+                return customToken()
+            }
+            if (_token != null) return _token
+
+            handler.post {
+                val webview = WebView(Injekt.get<Application>())
+                with(webview.settings) {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    databaseEnabled = true
+                    blockNetworkImage = true
+                }
+                webview.webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        // Get token
+                        view!!.evaluateJavascript("window.localStorage.getItem('Authorization')") { token ->
+                            _token = token.takeUnless { it == "null" }?.removeSurrounding("\"")
+                            latch.countDown()
+                            webview.destroy()
+                        }
+                    }
+                }
+                webview.loadDataWithBaseURL(baseUrl, " ", "text/html", "UTF-8", null)
+            }
+
+            latch.await(10, TimeUnit.SECONDS)
+            return _token
+        }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
@@ -150,5 +232,25 @@ class GocTruyenTranhVui : HttpSource() {
         SortByList(getSortByList()),
         GenreList(getGenreList()),
     )
+
+    private fun customToken(): String? = preferences.getString(CUSTOM_TOKEN, null)
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = CUSTOM_TOKEN
+            title = "Authorization Token"
+            summary = "Enter token manually"
+            dialogTitle = "Authorization Token"
+            customToken()?.let { dialogMessage = if (it.isNotEmpty()) "Token: ${customToken()}" else "Only show manually entered token, do not show token from WebView" }
+            setOnPreferenceChangeListener { _, _ ->
+                Toast.makeText(screen.context, RESTART_APP, Toast.LENGTH_LONG).show()
+                true
+            }
+        }.also(screen::addPreference)
+    }
+
+    companion object {
+        private const val CUSTOM_TOKEN = "custom_token"
+        private const val RESTART_APP = "Khởi chạy lại ứng dụng để áp dụng token mới nhập."
+    }
 }
-private const val TOKEN_KEY = "Bearer eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJEcmFrZW4iLCJjb21pY0lkcyI6W10sInJvbGVJZCI6bnVsbCwiZ3JvdXBJZCI6bnVsbCwiYWRtaW4iOmZhbHNlLCJyYW5rIjowLCJwZXJtaXNzaW9uIjpbXSwiaWQiOiIwMDAxMTE1OTg2IiwidGVhbSI6ZmFsc2UsImlhdCI6MTc1NzU5NjQxMSwiZW1haWwiOiJudWxsIn0.VcGDaVQvyowtvja04CTUpfCP5XiC5qIdPmANZL0Gjz2kjz__PJ8LATQ9s44FpNohMpgLgPQO0TVs67D_YFlLNw"

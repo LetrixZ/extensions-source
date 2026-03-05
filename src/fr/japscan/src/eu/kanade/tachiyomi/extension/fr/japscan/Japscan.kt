@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -23,6 +24,7 @@ import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -43,8 +45,11 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.collections.mapIndexed
 
-class Japscan : ConfigurableSource, ParsedHttpSource() {
+class Japscan :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val id: Long = 11
 
@@ -52,7 +57,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
 
     // Sometimes an adblock blocker will pop up, preventing the user from opening
     // a cloudflare protected page
-    private val internalBaseUrl = "https://www.japscan.si"
+    private val internalBaseUrl = "https://www.japscan.foo"
     override val baseUrl = "$internalBaseUrl/mangas/?sort=popular&p=1"
 
     override val lang = "fr"
@@ -71,7 +76,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         val dateFormat by lazy {
             SimpleDateFormat("dd MMM yyyy", Locale.US)
         }
-        private const val SHOW_SPOILER_CHAPTERS_Title = "Les chapitres en Anglais ou non traduit sont upload en tant que \" Spoilers \" sur Japscan"
+        private const val SHOW_SPOILER_CHAPTERS_TITLE = "Les chapitres en Anglais ou non traduit sont upload en tant que \" Spoilers \" sur Japscan"
         private const val SHOW_SPOILER_CHAPTERS = "JAPSCAN_SPOILER_CHAPTERS"
         private val prefsEntries = arrayOf("Montrer uniquement les chapitres traduit en Français", "Montrer les chapitres spoiler")
         private val prefsEntryValues = arrayOf("hide", "show")
@@ -83,9 +88,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         .add("referer", "$internalBaseUrl/")
 
     // Popular
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$internalBaseUrl/mangas/?sort=popular&p=$page", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$internalBaseUrl/mangas/?sort=popular&p=$page", headers)
 
     override fun popularMangaNextPageSelector() = ".pagination > li:last-child:not(.disabled)"
 
@@ -102,9 +105,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
     }
 
     // Latest
-    override fun latestUpdatesRequest(page: Int): Request {
-        return GET("$internalBaseUrl/mangas/?sort=updated&p=$page", headers)
-    }
+    override fun latestUpdatesRequest(page: Int): Request = GET("$internalBaseUrl/mangas/?sort=updated&p=$page", headers)
 
     override fun latestUpdatesSelector() = popularMangaSelector()
 
@@ -181,9 +182,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         thumbnail_url = internalBaseUrl + jsonObj["image"]!!.jsonPrimitive.content
     }
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET(internalBaseUrl + manga.url, headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(internalBaseUrl + manga.url, headers)
 
     override fun mangaDetailsParse(document: Document): SManga {
         val infoElement = document.selectFirst("#main .card-body")!!
@@ -195,8 +194,11 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         infoRows.select("p").forEach { el ->
             when (el.select("span").text().trim()) {
                 "Auteur(s):" -> manga.author = el.text().replace("Auteur(s):", "").trim()
+
                 "Artiste(s):" -> manga.artist = el.text().replace("Artiste(s):", "").trim()
+
                 "Genre(s):" -> manga.genre = el.text().replace("Genre(s):", "").trim()
+
                 "Statut:" -> manga.status = el.text().replace("Statut:", "").trim().let {
                     parseStatus(it)
                 }
@@ -213,29 +215,64 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         else -> SManga.UNKNOWN
     }
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        return internalBaseUrl + chapter.url
-    }
+    override fun getChapterUrl(chapter: SChapter): String = internalBaseUrl + chapter.url
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET(internalBaseUrl + manga.url, headers)
-    }
+    override fun chapterListRequest(manga: SManga): Request = GET(internalBaseUrl + manga.url, headers)
 
     override fun chapterListSelector() = "#list_chapters > div.collapse > div.list_chapters" +
-        if (chapterListPref() == "hide") { ":not(:has(.badge:contains(SPOILER),.badge:contains(RAW),.badge:contains(VUS)))" } else { "" }
+        if (chapterListPref() == "hide") {
+            ":not(:has(.badge:contains(SPOILER),.badge:contains(RAW),.badge:contains(VUS)))"
+        } else {
+            ""
+        }
     // JapScan sometimes uploads some "spoiler preview" chapters, containing 2 or 3 untranslated pictures taken from a raw. Sometimes they also upload full RAWs/US versions and replace them with a translation as soon as available.
     // Those have a span.badge "SPOILER" or "RAW". The additional pseudo selector makes sure to exclude these from the chapter list.
 
     override fun chapterFromElement(element: Element): SChapter {
-        val urlElement = element.selectFirst("*[href~=manga|manhua|manhwa]")
-        if (urlElement == null) {
+        // Only search for a tag with any attribute containing manga/manhua/manhwa
+        val urlPairs = element.getElementsByTag("a")
+            .mapNotNull { el ->
+                // Find the first attribute whose value matches the chapter URL pattern
+                val attrMatch = el.attributes().asList().firstOrNull { attr ->
+                    val value = attr.value
+                    value.startsWith("/manga/") || value.startsWith("/manhua/") || value.startsWith("/manhwa/") || value.startsWith("/bd/") || value.startsWith("/comic/")
+                }
+                if (attrMatch != null) {
+                    val name = el.ownText().ifBlank { el.text() }
+                    // Mark if the attribute is not "href"
+                    val isNonHref = attrMatch.key != "href"
+                    Triple(name, attrMatch.value, isNonHref)
+                } else {
+                    null
+                }
+            }
+            .distinctBy { it.second }
+            .sortedWith(
+                compareByDescending<Triple<String, String, Boolean>> { it.third }
+                    .thenBy { it.second.length },
+            ) // Prefer non-href first, then shorter URLs
+            .map { Pair(it.first, it.second) }
+
+        var foundPair: Pair<String, String>? = urlPairs.firstOrNull()
+        // var log = urlPairs.size.toString() + " URLs found:\n"
+        // for ((name, url) in urlPairs) {
+        //     val testUrl = internalBaseUrl + url
+        //     val response = client.newCall(GET(testUrl, headers)).execute()
+        //     log += "$name: $testUrl => ${response}\n"
+        //     if (response.isSuccessful) {
+        //         foundPair = Pair(name, url)
+        //         response.close()
+        //         break
+        //     }
+        //     response.close()
+        // }
+        if (foundPair == null) {
             throw Exception("Impossible de trouver l'URL du chapitre")
         }
 
         val chapter = SChapter.create()
-        chapter.setUrlWithoutDomain(urlElement.attr("href"))
-        chapter.name = urlElement.ownText()
-        // Using ownText() doesn't include child's text, like "VUS" or "RAW" badges, in the chapter name.
+        chapter.setUrlWithoutDomain(foundPair.second)
+        chapter.name = foundPair.first
         chapter.date_upload = element.selectFirst("span")?.text()?.trim()?.let { parseChapterDate(it) } ?: 0L
         return chapter
     }
@@ -244,7 +281,39 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         dateFormat.parse(date)!!.time
     }.getOrDefault(0L)
 
+    @Serializable
+    class ChapterDetails(
+        val imagesLink: List<String>,
+    )
+
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
+        try {
+            val document = client.newCall(GET("$internalBaseUrl${chapter.url}")).execute().asJsoup()
+            // Get only usable crypted b64
+            val atad = document.select("i[data-atad]").attr("data-atad").substring(7)
+            val mapping =
+                "M7HXtiwLKdpIBkEbQ2OaF8Sxmz1yGReU4q5DncgsT6jVA3Pfv0WuJ9YCZNhlor".reversed()
+            val reference =
+                "uGJ657yOSbZRtplgHEYPBwCqaxQIizDWmTLMsAeNocnX0d98rf4Kj1kvh3UFV2".reversed()
+            val decrypted =
+                atad.replace(Regex("[A-Z0-9]", RegexOption.IGNORE_CASE)) { matchResult ->
+                    val char = matchResult.value[0]
+                    val index = reference.indexOf(char)
+                    (if (index != -1) mapping[index] else char).toString()
+                }
+            val fromB64 = String(Base64.decode(decrypted, Base64.DEFAULT)).parseAs<ChapterDetails>()
+            if (fromB64.imagesLink.isEmpty()) throw UnsupportedOperationException("Can't parse Images")
+            return Observable.just(
+                fromB64.imagesLink.mapIndexed { i, url ->
+                    Page(i, imageUrl = "$url?o=1")
+                },
+            )
+        } catch (e: Exception) {
+            return fallbackFetchPageList(chapter)
+        }
+    }
+
+    fun fallbackFetchPageList(chapter: SChapter): Observable<List<Page>> {
         val interfaceName = randomString()
 
         val handler = Handler(Looper.getMainLooper())
@@ -299,7 +368,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         handler.post { webView?.destroy() }
 
         if (latch.count == 1L) {
-            throw Exception("Timed out decrypting image links")
+            throw Exception("Erreur lors de la récupération des pages")
         }
 
         val baseUrlHost = internalBaseUrl.toHttpUrl().host.substringAfter("www.")
@@ -325,8 +394,8 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
     // Prefs
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
         val chapterListPref = androidx.preference.ListPreference(screen.context).apply {
-            key = SHOW_SPOILER_CHAPTERS_Title
-            title = SHOW_SPOILER_CHAPTERS_Title
+            key = SHOW_SPOILER_CHAPTERS_TITLE
+            title = SHOW_SPOILER_CHAPTERS_TITLE
             entries = prefsEntries
             entryValues = prefsEntryValues
             summary = "%s"

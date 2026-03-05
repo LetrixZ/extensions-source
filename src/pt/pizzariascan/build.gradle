@@ -1,9 +1,7 @@
 ext {
     extName = 'Pizzaria Scan'
     extClass = '.Pizzariascan'
-    themePkg = 'madara'
-    baseUrl = 'https://pizzariascan.site'
-    overrideVersionCode = 0
+    extVersionCode = 47
     isNsfw = true
 }
 

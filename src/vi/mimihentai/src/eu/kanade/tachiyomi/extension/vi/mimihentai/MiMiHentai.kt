@@ -1,240 +1,206 @@
 package eu.kanade.tachiyomi.extension.vi.mimihentai
 
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.asObservableSuccess
-import eu.kanade.tachiyomi.network.await
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
-import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
-import keiyoushi.utils.parseAs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
+import eu.kanade.tachiyomi.util.asJsoup
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import rx.Observable
+import java.io.IOException
+import java.util.Calendar
+import java.util.concurrent.TimeUnit
 
 class MiMiHentai : HttpSource() {
-    override val name: String = "MiMiHentai"
 
-    override val lang: String = "vi"
+    override val name = "MiMiHentai"
 
-    override val baseUrl: String = "https://mimihentai.com"
+    override val baseUrl = "https://mimihentai.net"
 
-    private val apiUrl: String = "$baseUrl/api/v1/manga"
+    override val lang = "vi"
 
-    override val supportsLatest: Boolean = true
+    override val supportsLatest = true
 
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .rateLimit(3)
+    override val client = network.cloudflareClient.newBuilder()
+        .rateLimitHost(baseUrl.toHttpUrl(), 14, 1, TimeUnit.MINUTES)
+        .addNetworkInterceptor {
+            val request = it.request()
+            val response = it.proceed(request)
+
+            if (request.url.toString().startsWith(baseUrl)) {
+                if (response.code == 429) {
+                    throw IOException("Bạn đang request quá nhanh!")
+                }
+            }
+            response
+        }
         .build()
 
-    override fun latestUpdatesRequest(page: Int): Request = GET(
-        apiUrl.toHttpUrl().newBuilder().apply {
-            addPathSegments("tatcatruyen")
-            addQueryParameter("page", (page - 1).toString())
-            addQueryParameter("sort", "updated_at")
-            addQueryParameter("ex", "196")
-        }.build(),
-        headers,
-    )
+    // ============================== Popular ===============================
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val res = response.parseAs<ListingDto>()
-        val hasNextPage = res.currentPage != res.totalPage
-        return MangasPage(res.data.map { it.toSManga() }, hasNextPage)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/danh-sach?sort=-views&page=$page", headers)
 
-    override fun getMangaUrl(manga: SManga): String = "$baseUrl/g/${manga.url}"
+    override fun popularMangaParse(response: Response): MangasPage {
+        val document = response.asJsoup()
 
-    override fun chapterListRequest(manga: SManga): Request {
-        val id = manga.url.substringAfterLast("/")
-        val url = apiUrl.toHttpUrl().newBuilder()
-            .addPathSegment("gallery")
-            .addPathSegment(id)
-            .build()
-        return GET(url, headers)
-    }
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val segments = response.request.url.pathSegments
-        val mangaId = segments.last()
-        val res = response.parseAs<List<ChapterDto>>()
-        return res.map { it.toSChapter(mangaId) }
-    }
-
-    override fun getChapterUrl(chapter: SChapter): String {
-        val mangaId = chapter.url.substringBefore('/')
-        val chapterId = chapter.url.substringAfter('/')
-        return "$baseUrl/g/$mangaId/chapter/$chapterId"
-    }
-
-    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
-
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        val id = manga.url.substringAfterLast("/")
-        val url = apiUrl.toHttpUrl().newBuilder()
-            .addPathSegment("info")
-            .addPathSegment(id)
-            .build()
-        return GET(url, headers)
-    }
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val res = response.parseAs<MangaDto>()
-        return res.toSManga()
-    }
-
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET("$apiUrl/chapter?id=${chapter.url.substringAfterLast("/")}", headers)
-    }
-
-    override fun pageListParse(response: Response): List<Page> {
-        val res = response.parseAs<PageListDto>()
-        return res.pages.mapIndexed { index, url ->
-            Page(index, imageUrl = url.imageUrl)
-        }
-    }
-
-    override fun popularMangaParse(response: Response): MangasPage = latestUpdatesParse(response)
-
-    override fun popularMangaRequest(page: Int): Request = GET(
-        apiUrl.toHttpUrl().newBuilder().apply {
-            addPathSegments("tatcatruyen")
-            addQueryParameter("page", (page - 1).toString())
-            addQueryParameter("sort", "views")
-            addQueryParameter("ex", "196")
-        }.build(),
-        headers,
-    )
-
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return when {
-            query.startsWith(PREFIX_ID_SEARCH) -> {
-                val id = query.removePrefix(PREFIX_ID_SEARCH)
-                client.newCall(searchMangaByIdRequest(id))
-                    .asObservableSuccess()
-                    .map { response -> searchMangaByIdParse(response) }
+        val mangaList = document.select("a.group").map { element ->
+            SManga.create().apply {
+                setUrlWithoutDomain(element.absUrl("href"))
+                title = element.selectFirst("h1")!!.text()
+                thumbnail_url = element.selectFirst("img")?.let {
+                    it.absUrl("data-src")
+                        .ifEmpty { it.absUrl("src") }
+                }
             }
-            query.toIntOrNull() != null -> {
-                client.newCall(searchMangaByIdRequest(query))
-                    .asObservableSuccess()
-                    .map { response -> searchMangaByIdParse(response) }
-            }
-            else -> super.fetchSearchManga(page, query, filters)
         }
-    }
-    private fun searchMangaByIdRequest(id: String) = GET("$apiUrl/info/$id", headers)
 
-    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
+        val currentPage = response.request.url.queryParameter("page")?.toIntOrNull() ?: 1
+        val hasNextPage = document.selectFirst("a[href*='page=${currentPage + 1}']") != null
 
-    private fun searchMangaByIdParse(response: Response): MangasPage {
-        val details = mangaDetailsParse(response)
-        return MangasPage(listOf(details), false)
+        return MangasPage(mangaList, hasNextPage)
     }
+
+    // =============================== Latest ===============================
+
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/danh-sach?page=$page", headers)
+
+    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
+
+    // =============================== Search ===============================
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = apiUrl.toHttpUrl().newBuilder().apply {
-            addPathSegments("advance-search")
-            addQueryParameter("author", "")
-            addQueryParameter("character", "")
-            addQueryParameter("parody", "")
-            addQueryParameter("page", (page - 1).toString())
-            addQueryParameter("name", query)
-            (if (filters.isEmpty()) getFilterList() else filters).forEach { filters ->
-                when (filters) {
-                    is SortByList ->
-                        {
-                            val sort = getSortByList()[filters.state]
-                            addQueryParameter("sort", sort.id)
-                        }
-                    is GenreList -> filters.state.forEach {
-                        when (it.state) {
-                            Filter.TriState.STATE_INCLUDE -> addQueryParameter("genre", it.id)
-                            Filter.TriState.STATE_EXCLUDE -> addQueryParameter("ex", it.id)
+        val url = "$baseUrl/tim-kiem".toHttpUrl().newBuilder().apply {
+            addQueryParameter("keyword", query)
+            addQueryParameter("page", page.toString())
+
+            filters.forEach { filter ->
+                when (filter) {
+                    is GenreFilter -> {
+                        val selectedGenres = filter.state.filter { it.state }.joinToString(",") { it.id }
+                        if (selectedGenres.isNotEmpty()) {
+                            addQueryParameter("filter[accept_genres]", selectedGenres)
                         }
                     }
-                    is TextField -> setQueryParameter(filters.key, filters.state)
+
+                    is StatusFilter -> {
+                        if (filter.state > 0) {
+                            addQueryParameter("filter[status]", filter.toUriPart())
+                        }
+                    }
+
+                    is SortFilter -> {
+                        addQueryParameter("sort", filter.toUriPart())
+                    }
+
                     else -> {}
                 }
             }
         }.build()
+
         return GET(url, headers)
     }
 
-    private fun genresRequest(): Request = GET("$apiUrl/genres", headers)
+    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
-    private fun parseGenres(response: Response): List<Pair<Long, String>> {
-        return response.parseAs<List<Genres>>().map { Pair(it.id, it.name) }
+    // =============================== Details ==============================
+
+    override fun mangaDetailsParse(response: Response): SManga {
+        val document = response.asJsoup()
+
+        return SManga.create().apply {
+            title = document.selectFirst("div.title p")!!.text()
+            thumbnail_url = document.selectFirst("img.rounded.shadow-md.w-full")?.let {
+                it.absUrl("data-src")
+                    .ifEmpty { it.absUrl("src") }
+            }
+            author = document.selectFirst("a[href*='/tac-gia/']")?.text()
+            genre = document.select("a[href*='/the-loai/']").joinToString { it.text() }
+
+            val bodyText = document.body().text()
+            status = when {
+                bodyText.contains("Đã hoàn thành") -> SManga.COMPLETED
+                bodyText.contains("Đang tiến hành") -> SManga.ONGOING
+                else -> SManga.UNKNOWN
+            }
+
+            description = document.selectFirst("div.mt-4")?.ownText()
+        }
     }
 
-    private var fetchGenresAttempts: Int = 0
-    private fun fetchGenres() {
-        if (fetchGenresAttempts >= 3 || genreList.isEmpty()) {
-            launchIO {
-                try {
-                    client.newCall(genresRequest()).await()
-                        .use { parseGenres(it) }
-                        .takeIf { it.isNotEmpty() }
-                        ?.also { genreList = it }
-                } catch (_: Exception) {
-                } finally {
-                    fetchGenresAttempts++
-                }
+    // ============================== Chapters ==============================
+
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val document = response.asJsoup()
+
+        return document.select("div.chapter-list a").map { element ->
+            SChapter.create().apply {
+                setUrlWithoutDomain(element.absUrl("href"))
+                name = element.selectFirst("h1")?.text()
+                    ?: element.attr("title")
+                    ?: element.text()
+
+                val dateText = element.parent()?.selectFirst("span.timeago")?.text()
+                    ?: element.parent()?.parent()?.selectFirst("span.timeago")?.text()
+                date_upload = parseRelativeDate(dateText)
             }
         }
     }
 
-    private fun launchIO(block: suspend () -> Unit) = GlobalScope.launch(Dispatchers.IO) { block() }
+    private fun parseRelativeDate(dateStr: String?): Long {
+        if (dateStr.isNullOrBlank()) return 0L
 
-    private var genreList: List<Pair<Long, String>> = emptyList()
+        val calendar = Calendar.getInstance()
+        val number = NUMBER_REGEX.find(dateStr)?.value?.toIntOrNull() ?: return 0L
 
-    private class GenreList(name: String, pairs: List<Pair<Long, String>>) : GenresFilter(name, pairs)
-    private open class GenresFilter(title: String, pairs: List<Pair<Long, String>>) :
-        Filter.Group<GenreCheckBox>(title, pairs.map { GenreCheckBox(it.second, it.first.toString()) })
-    class GenreCheckBox(name: String, val id: String = name) : Filter.TriState(name)
+        when {
+            dateStr.contains("giây") -> calendar.add(Calendar.SECOND, -number)
+            dateStr.contains("phút") -> calendar.add(Calendar.MINUTE, -number)
+            dateStr.contains("giờ") -> calendar.add(Calendar.HOUR_OF_DAY, -number)
+            dateStr.contains("ngày") -> calendar.add(Calendar.DAY_OF_MONTH, -number)
+            dateStr.contains("tuần") -> calendar.add(Calendar.WEEK_OF_YEAR, -number)
+            dateStr.contains("tháng") -> calendar.add(Calendar.MONTH, -number)
+            dateStr.contains("năm") -> calendar.add(Calendar.YEAR, -number)
+            else -> return 0L
+        }
 
-    private class SortByList(sort: Array<SortBy>) : Filter.Select<SortBy>("Sắp xếp", sort)
-    private class SortBy(name: String, val id: String) : Filter.CheckBox(name) {
-        override fun toString(): String {
-            return name
+        return calendar.timeInMillis
+    }
+
+    companion object {
+        private val NUMBER_REGEX = Regex("\\d+")
+    }
+
+    // =============================== Pages ================================
+
+    override fun pageListParse(response: Response): List<Page> {
+        val document = response.asJsoup()
+
+        return document.select("img.lazy").mapIndexed { index, element ->
+            val imageUrl = element.absUrl("src").ifEmpty {
+                element.absUrl("data-src")
+            }
+            Page(index, imageUrl = imageUrl)
         }
     }
 
-    private class TextField(name: String, val key: String) : Filter.Text(name)
-    override fun getFilterList(): FilterList {
-        fetchGenres()
-        return FilterList(
-            SortByList(getSortByList()),
-            TextField("Tác giả", "author"),
-            TextField("Parody", "parody"),
-            TextField("Nhân vật", "character"),
-            if (genreList.isEmpty()) {
-                Filter.Header("Nhấn 'Làm mới' để thử tải thể loại")
-            } else {
-                GenreList("Thể loại", genreList)
-            },
-        )
-    }
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
-    private fun getSortByList() = arrayOf(
-        SortBy("Mới", "updated_at"),
-        SortBy("Likes", "likes"),
-        SortBy("Views", "views"),
-        SortBy("Lưu", "follows"),
-        SortBy("Tên", "title"),
-    )
-    companion object {
-        private const val PREFIX_ID_SEARCH = "id:"
-    }
+    // =============================== Related ================================
+    // dirty hack to disable suggested mangas on Komikku due to heavy rate limit
+    // https://github.com/komikku-app/komikku/blob/4323fd5841b390213aa4c4af77e07ad42eb423fc/source-api/src/commonMain/kotlin/eu/kanade/tachiyomi/source/CatalogueSource.kt#L176-L184
+    @Suppress("Unused")
+    @JvmName("getDisableRelatedMangasBySearch")
+    fun disableRelatedMangasBySearch() = true
+
+    // ============================== Filters ===============================
+
+    override fun getFilterList(): FilterList = getFilters()
 }

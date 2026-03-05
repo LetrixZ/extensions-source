@@ -1,7 +1,8 @@
 ext {
-    extName = "MiMiHentai"
-    extClass = ".MiMiHentai"
-    extVersionCode = 3
+    extName = 'MiMiHentai'
+    extClass = '.MiMiHentai'
+    extVersionCode = 2
     isNsfw = true
 }
+
 apply from: "$rootDir/common.gradle"

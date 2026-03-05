@@ -32,12 +32,11 @@ class ScanManga : HttpSource() {
 
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .add("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
-        .set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36")
+        .set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
+        .set("X-Requested-With", "XMLHttpRequest")
 
     // Popular
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").map { element ->
@@ -90,7 +89,9 @@ class ScanManga : HttpSource() {
 
     override fun searchMangaParse(response: Response): MangasPage {
         val json = response.body.string()
-        if (json == "[]") { return MangasPage(emptyList(), false) }
+        if (json == "[]") {
+            return MangasPage(emptyList(), false)
+        }
 
         return MangasPage(
             json.parseAs<MangaSearchDto>().title?.map {
@@ -228,7 +229,9 @@ class ScanManga : HttpSource() {
 
         val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
             .newCall(pageListRequest).execute().use { response ->
-                if (!response.isSuccessful) { error("Unexpected error while fetching lel.") }
+                if (!response.isSuccessful) {
+                    error("Unexpected error while fetching lel.")
+                }
                 dataAPI(response.body.string(), chapterId.toInt())
             }
 

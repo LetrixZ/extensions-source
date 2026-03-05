@@ -7,11 +7,12 @@ import eu.kanade.tachiyomi.util.asJsoup
 import okhttp3.FormBody
 import okhttp3.Response
 
-class TraduccionesMoonlight : MangaEsp(
-    "Traducciones Moonlight",
-    "https://traduccionesmoonlight.com",
-    "es",
-) {
+class TraduccionesMoonlight :
+    MangaEsp(
+        "Traducciones Moonlight",
+        "https://traduccionesmoonlight.com",
+        "es",
+    ) {
     // Mangathemesia -> MangaEsp
     override val versionId = 3
 
@@ -27,8 +28,8 @@ class TraduccionesMoonlight : MangaEsp(
             }
             doc = client.newCall(POST(url, headers, body.build())).execute().asJsoup()
         }
-        return doc.select("main.contenedor.read img, main > img[src]").mapIndexed { i, element ->
-            Page(i, imageUrl = element.attr("abs:src"))
+        return doc.select("main.contenedor.read img, main > img").mapIndexed { i, element ->
+            Page(i, imageUrl = element.imgAttr())
         }
     }
 }

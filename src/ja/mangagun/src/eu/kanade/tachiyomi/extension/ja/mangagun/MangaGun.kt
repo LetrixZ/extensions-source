@@ -7,6 +7,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.cookieinterceptor.CookieInterceptor
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -24,32 +25,47 @@ class MangaGun : FMReader("NihonKuni", "https://$DOMAIN", "ja") {
     // Formerly "MangaGun(漫画軍)"
     override val id = 3811800324362294701
 
-    override val infoElementSelector = "div.row div.row"
+    override val infoElementSelector = "div.manga-detail-container"
+    override val mangaDetailsSelectorDescription = ".description-text-content, .manga-info-list > li:nth-child(1) .info-field-value"
+
+    override val client = super.client.newBuilder()
+        .addNetworkInterceptor(CookieInterceptor(DOMAIN, "smartlink_shown" to "1")).build()
 
     // source is picky about URL format
-    private fun mangaRequest(sortBy: String, page: Int): Request {
-        return GET(
-            "$baseUrl/manga-list.html?listType=pagination&page=$page&artist=&author=&group=&m_status=&name=&genre=&ungenre=&magazine=&sort=$sortBy&sort_type=DESC",
-            headers,
-        )
-    }
+    private fun mangaRequest(sortBy: String, page: Int): Request = GET(
+        "$baseUrl/manga-list.html?listType=pagination&page=$page&artist=&author=&group=&m_status=&name=&genre=&ungenre=&magazine=&sort=$sortBy&sort_type=DESC",
+        headers,
+    )
 
     override fun popularMangaRequest(page: Int): Request = mangaRequest("views", page)
 
     override fun latestUpdatesRequest(page: Int): Request = mangaRequest("last_update", page)
 
-    override fun getImgAttr(element: Element?): String? {
-        return when {
-            element == null -> null
-            element.hasAttr("data-original") -> element.attr("abs:data-original")
-            element.hasAttr("data-src") -> element.attr("abs:data-src")
-            element.hasAttr("data-bg") -> element.attr("abs:data-bg")
-            element.hasAttr("data-srcset") -> element.attr("abs:data-srcset")
-            element.hasAttr("style") -> element.attr("style").substringAfter("url(")
-                .substringBefore(")").trim('\'', '"')
+    override fun popularMangaSelector() = "div.manga-grid div.manga-card"
 
-            else -> element.attr("abs:src")
+    override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {
+        element.selectFirst(".manga-title")!!.let {
+            setUrlWithoutDomain(it.attr("abs:href"))
+            title = it.text()
         }
+        thumbnail_url = getImgAttr(element.selectFirst(".manga-cover"))
+    }
+
+    override fun getImgAttr(element: Element?): String? = when {
+        element == null -> null
+
+        element.hasAttr("data-original") -> element.attr("abs:data-original")
+
+        element.hasAttr("data-src") -> element.attr("abs:data-src")
+
+        element.hasAttr("data-bg") -> element.attr("abs:data-bg")
+
+        element.hasAttr("data-srcset") -> element.attr("abs:data-srcset")
+
+        element.hasAttr("style") -> element.attr("style").substringAfter("url(")
+            .substringBefore(")").trim('\'', '"')
+
+        else -> element.attr("abs:src")
     }
 
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {

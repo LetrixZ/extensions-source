@@ -1,7 +1,5 @@
 package eu.kanade.tachiyomi.extension.all.manhuarm
 
-import android.os.Build
-import androidx.annotation.RequiresApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -17,17 +15,24 @@ import kotlinx.serialization.json.put
 import java.io.IOException
 
 @Serializable
+data class OcrDataDto(
+    val a: String,
+    val b: String,
+    val c: Long,
+    val d: String,
+    val e: String,
+)
+
+@Serializable
 class PageDto(
     @SerialName("image")
     val imageUrl: String,
-
     @SerialName("texts")
     @Serializable(with = DialogListSerializer::class)
     val dialogues: List<Dialog> = emptyList(),
 )
 
 @Serializable
-@RequiresApi(Build.VERSION_CODES.O)
 data class Dialog(
     val x: Float,
     val y: Float,
@@ -37,7 +42,6 @@ data class Dialog(
     val textByLanguage: Map<String, String> = emptyMap(),
 ) {
     var scale: Float = 1F
-
     val height: Float get() = scale * _height
     val width: Float get() = scale * _width
 
@@ -52,39 +56,54 @@ data class Dialog(
 
 private object DialogListSerializer :
     JsonTransformingSerializer<List<Dialog>>(ListSerializer(Dialog.serializer())) {
-    override fun transformDeserialize(element: JsonElement): JsonElement {
-        return JsonArray(
-            element.jsonArray.map { jsonElement ->
-                val coordinates = getCoordinates(jsonElement)
-                val textByLanguage = getDialogs(jsonElement)
 
-                buildJsonObject {
-                    put("x", coordinates[0])
-                    put("y", coordinates[1])
-                    put("_width", coordinates[2])
-                    put("_height", coordinates[3])
-                    put("textByLanguage", textByLanguage)
+    override fun transformDeserialize(element: JsonElement): JsonElement {
+        if (element !is JsonArray) {
+            return JsonArray(emptyList())
+        }
+
+        if (element.jsonArray.isEmpty()) {
+            return JsonArray(emptyList())
+        }
+
+        return JsonArray(
+            element.jsonArray.mapNotNull { jsonElement ->
+                try {
+                    val coordinates = getCoordinates(jsonElement) ?: return@mapNotNull null
+                    val textByLanguage = getDialogs(jsonElement)
+
+                    // Validate coordinates array has at least 4 elements
+                    if (coordinates.size < 4) return@mapNotNull null
+
+                    buildJsonObject {
+                        put("x", coordinates[0])
+                        put("y", coordinates[1])
+                        put("_width", coordinates[2])
+                        put("_height", coordinates[3])
+                        put("textByLanguage", textByLanguage)
+                    }
+                } catch (e: Exception) {
+                    null
                 }
             },
         )
     }
 
-    private fun getCoordinates(element: JsonElement): JsonArray {
-        return when (element) {
-            is JsonArray -> element.jsonArray[0].jsonArray
-            else -> element.jsonObject["box"]?.jsonArray
-                ?: throw IOException("Dialog box position not found")
-        }
+    private fun getCoordinates(element: JsonElement): JsonArray = when (element) {
+        is JsonArray -> element.jsonArray[0].jsonArray
+
+        else -> element.jsonObject["box"]?.jsonArray
+            ?: throw IOException("Dialog box position not found")
     }
-    private fun getDialogs(element: JsonElement): JsonObject {
-        return buildJsonObject {
-            when (element) {
-                is JsonArray -> put("text", element.jsonArray[1])
-                else -> {
-                    element.jsonObject.entries
-                        .filter { it.value.isString }
-                        .forEach { put(it.key, it.value) }
-                }
+
+    private fun getDialogs(element: JsonElement): JsonObject = buildJsonObject {
+        when (element) {
+            is JsonArray -> put("text", element.jsonArray[1])
+
+            else -> {
+                element.jsonObject.entries
+                    .filter { it.value.isString }
+                    .forEach { put(it.key, it.value) }
             }
         }
     }

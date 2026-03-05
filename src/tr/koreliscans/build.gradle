@@ -1,9 +1,9 @@
 ext {
     extName = 'Koreli Scans'
     extClass = '.KoreliScans'
-    themePkg = 'madara'
-    baseUrl = 'https://koreliscans.net'
-    overrideVersionCode = 2
+    themePkg = 'mangathemesia'
+    baseUrl = 'https://nabimanga.com'
+    overrideVersionCode = 18
     isNsfw = false
 }
 

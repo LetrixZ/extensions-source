@@ -33,27 +33,34 @@ import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
+import kotlin.text.matches
 
-class Desu : ConfigurableSource, HttpSource() {
+class Desu :
+    HttpSource(),
+    ConfigurableSource {
     override val name = "Desu"
 
     override val id: Long = 6684416167758830305
 
-    private val preferences: SharedPreferences = getPreferences()
-
-    init {
-        preferences.getString(DEFAULT_DOMAIN_PREF, null).let { prefDefaultDomain ->
+    private val preferences: SharedPreferences = getPreferences {
+        this.getString(DOMAIN_PREF, DOMAIN_DEFAULT)?.let { domain ->
+            if (!domain.matches(URL_REGEX)) {
+                this.edit()
+                    .putString(DOMAIN_PREF, DOMAIN_DEFAULT)
+                    .apply()
+            }
+        }
+        this.getString(DEFAULT_DOMAIN_PREF, null).let { prefDefaultDomain ->
             if (prefDefaultDomain != DOMAIN_DEFAULT) {
-                preferences.edit()
-                    .putString(DOMAIN_TITLE, DOMAIN_DEFAULT)
+                this.edit()
+                    .putString(DOMAIN_PREF, DOMAIN_DEFAULT)
                     .putString(DEFAULT_DOMAIN_PREF, DOMAIN_DEFAULT)
                     .apply()
             }
         }
     }
 
-    private var domain: String = preferences.getString(DOMAIN_TITLE, DOMAIN_DEFAULT)!!
-    override val baseUrl: String = domain
+    override val baseUrl = preferences.getString(DOMAIN_PREF, DOMAIN_DEFAULT)!!
 
     override val lang = "ru"
 
@@ -126,10 +133,14 @@ class Desu : ConfigurableSource, HttpSource() {
             genre = ("$category, $rawAgeStop, $genresStr").split(", ").filter { it.isNotEmpty() }.joinToString { it.trim() }
             status = when (trans_status) {
                 "continued" -> SManga.ONGOING
+
                 "completed" -> SManga.COMPLETED
+
                 else -> when (this@toSManga.status) {
                     "ongoing" -> SManga.ONGOING
+
                     "released" -> SManga.COMPLETED
+
                     //  "copyright" -> SManga.LICENSED  Hides available chapters!
                     else -> SManga.UNKNOWN
                 }
@@ -138,13 +149,11 @@ class Desu : ConfigurableSource, HttpSource() {
         }
     }
 
-    override fun popularMangaRequest(page: Int) =
-        GET("$baseUrl$API_URL/?limit=50&order=popular&page=$page", headers)
+    override fun popularMangaRequest(page: Int) = GET("$baseUrl$API_URL/?limit=50&order=popular&page=$page", headers)
 
     override fun popularMangaParse(response: Response) = searchMangaParse(response)
 
-    override fun latestUpdatesRequest(page: Int) =
-        GET("$baseUrl$API_URL/?limit=50&order=updated&page=$page", headers)
+    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl$API_URL/?limit=50&order=updated&page=$page", headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage = searchMangaParse(response)
 
@@ -185,22 +194,16 @@ class Desu : ConfigurableSource, HttpSource() {
         return MangasPage(mangas, page.pageNavParams.count > page.pageNavParams.page * page.pageNavParams.limit)
     }
 
-    private fun titleDetailsRequest(manga: SManga): Request {
-        return GET(baseUrl + API_URL + manga.url + "/", headers)
-    }
+    private fun titleDetailsRequest(manga: SManga): Request = GET(baseUrl + API_URL + manga.url + "/", headers)
 
     // Workaround to allow "Open in browser" use the real URL.
-    override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
-        return client.newCall(titleDetailsRequest(manga))
-            .asObservableSuccess()
-            .map { response ->
-                mangaDetailsParse(response).apply { initialized = true }
-            }
-    }
+    override fun fetchMangaDetails(manga: SManga): Observable<SManga> = client.newCall(titleDetailsRequest(manga))
+        .asObservableSuccess()
+        .map { response ->
+            mangaDetailsParse(response).apply { initialized = true }
+        }
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET(baseUrl + "/manga" + manga.url, headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(baseUrl + "/manga" + manga.url, headers)
 
     override fun mangaDetailsParse(response: Response) = SManga.create().apply {
         val responseString = response.body.string()
@@ -240,13 +243,9 @@ class Desu : ConfigurableSource, HttpSource() {
 
     override fun chapterListRequest(manga: SManga): Request = titleDetailsRequest(manga)
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(baseUrl + API_URL + chapter.url.substringAfterLast("#apiChapter"), headers)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + API_URL + chapter.url.substringAfterLast("#apiChapter"), headers)
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        return baseUrl + chapter.url.substringBeforeLast("#apiChapter")
-    }
+    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url.substringBeforeLast("#apiChapter")
 
     override fun pageListParse(response: Response): List<Page> {
         val obj = json.parseToJsonElement(response.body.string())
@@ -255,40 +254,36 @@ class Desu : ConfigurableSource, HttpSource() {
 
         return obj["pages"]!!.jsonObject["list"]!!.jsonArray
             .mapIndexed { i, jsonEl ->
-                Page(i, "", jsonEl.jsonObject["img"]!!.jsonPrimitive.content)
+                Page(i, "", jsonEl.jsonObject["img"]!!.jsonPrimitive.content.replace(Regex("(?<=\\.)desu\\..+(?=/manga/)"), baseUrl.substringAfter("://")))
             }
     }
 
-    override fun imageUrlParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
-    private fun searchMangaByIdRequest(id: String): Request {
-        return GET("$baseUrl$API_URL/$id", headers)
+    private fun searchMangaByIdRequest(id: String): Request = GET("$baseUrl$API_URL/$id", headers)
+
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_SLUG_SEARCH)) {
+        val realQuery = query.removePrefix(PREFIX_SLUG_SEARCH)
+        client.newCall(searchMangaByIdRequest(realQuery))
+            .asObservableSuccess()
+            .map { response ->
+                val details = mangaDetailsParse(response)
+                details.url = "/$realQuery"
+                MangasPage(listOf(details), false)
+            }
+    } else {
+        client.newCall(searchMangaRequest(page, query, filters))
+            .asObservableSuccess()
+            .map { response ->
+                searchMangaParse(response)
+            }
     }
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_SLUG_SEARCH)) {
-            val realQuery = query.removePrefix(PREFIX_SLUG_SEARCH)
-            client.newCall(searchMangaByIdRequest(realQuery))
-                .asObservableSuccess()
-                .map { response ->
-                    val details = mangaDetailsParse(response)
-                    details.url = "/$realQuery"
-                    MangasPage(listOf(details), false)
-                }
-        } else {
-            client.newCall(searchMangaRequest(page, query, filters))
-                .asObservableSuccess()
-                .map { response ->
-                    searchMangaParse(response)
-                }
-        }
-    }
-
-    private class OrderBy : Filter.Select<String>(
-        "Сортировка",
-        arrayOf("Популярность", "Дата", "Имя"),
-    )
+    private class OrderBy :
+        Filter.Select<String>(
+            "Сортировка",
+            arrayOf("Популярность", "Дата", "Имя"),
+        )
 
     private class GenreList(genres: List<Genre>) : Filter.Group<Genre>("Жанр", genres)
 
@@ -363,7 +358,7 @@ class Desu : ConfigurableSource, HttpSource() {
     private var isEng: String? = preferences.getString(LANGUAGE_PREF, "eng")
 
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
-        val titleLanguagePref = ListPreference(screen.context).apply {
+        ListPreference(screen.context).apply {
             key = LANGUAGE_PREF
             title = "Выбор языка на обложке"
             entries = arrayOf("Английский", "Русский")
@@ -375,21 +370,23 @@ class Desu : ConfigurableSource, HttpSource() {
                 Toast.makeText(screen.context, warning, Toast.LENGTH_LONG).show()
                 true
             }
-        }
-        val domainDesuPref = EditTextPreference(screen.context).apply {
-            key = DOMAIN_TITLE
+        }.let(screen::addPreference)
+        EditTextPreference(screen.context).apply {
+            key = DOMAIN_PREF
             title = DOMAIN_TITLE
-            summary = domain
+            summary = baseUrl + "\n\nПо умолчанию: $DOMAIN_DEFAULT"
             setDefaultValue(DOMAIN_DEFAULT)
-            dialogTitle = DOMAIN_TITLE
-            setOnPreferenceChangeListener { _, _ ->
+            setOnPreferenceChangeListener { _, newValue ->
+                if (!newValue.toString().matches(URL_REGEX)) {
+                    val warning = "Домен должен содаржать https:// или http://"
+                    Toast.makeText(screen.context, warning, Toast.LENGTH_LONG).show()
+                    return@setOnPreferenceChangeListener false
+                }
                 val warning = "Для смены домена необходимо перезапустить приложение с полной остановкой."
                 Toast.makeText(screen.context, warning, Toast.LENGTH_LONG).show()
                 true
             }
-        }
-        screen.addPreference(titleLanguagePref)
-        screen.addPreference(domainDesuPref)
+        }.let(screen::addPreference)
     }
 
     companion object {
@@ -401,6 +398,10 @@ class Desu : ConfigurableSource, HttpSource() {
 
         private const val DOMAIN_TITLE = "Домен"
         private const val DEFAULT_DOMAIN_PREF = "default_domain"
-        private const val DOMAIN_DEFAULT = "https://desu.city"
+        private const val DOMAIN_PREF = "DOMAIN_PREF"
+
+        private val URL_REGEX = Regex("^https?://.+")
+
+        private const val DOMAIN_DEFAULT = "https://desu.uno"
     }
 }

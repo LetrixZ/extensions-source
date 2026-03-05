@@ -12,9 +12,7 @@ class SakuraMangasResultDto(
     private val html: String,
 ) {
 
-    fun asJsoup(baseUri: String = ""): Document {
-        return Jsoup.parseBodyFragment(this.html, baseUri)
-    }
+    fun asJsoup(baseUri: String = ""): Document = Jsoup.parseBodyFragment(this.html, baseUri)
 }
 
 @Serializable
@@ -56,5 +54,5 @@ class SakuraMangaInfoDto(
 
 @Serializable
 class SakuraMangaChapterReadDto(
-    val imageUrls: List<String>,
+    val imageUrls: String,
 )

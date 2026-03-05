@@ -9,8 +9,9 @@ import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
-import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.parseAs
+import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
@@ -18,12 +19,13 @@ import rx.Observable
 import rx.schedulers.Schedulers
 import java.util.concurrent.TimeUnit
 
-class QiScans : Iken(
-    "Qi Scans",
-    "en",
-    "https://qiscans.org",
-    "https://api.qiscans.org",
-) {
+class QiScans :
+    Iken(
+        "Qi Scans",
+        "en",
+        "https://qimanhwa.com",
+        "https://api.qimanhwa.com",
+    ) {
 
     override val client = super.client.newBuilder()
         .rateLimit(3, 1, TimeUnit.SECONDS)
@@ -38,12 +40,11 @@ class QiScans : Iken(
         return GET(url, headers)
     }
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        return searchMangaParse(response)
-    }
+    override fun popularMangaParse(response: Response): MangasPage = searchMangaParse(response)
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val url = "$apiUrl/api/query".toHttpUrl().newBuilder().apply { // 'query' instead of 'posts'
+        val url = "$apiUrl/api/query".toHttpUrl().newBuilder().apply {
+            // 'query' instead of 'posts'
             addQueryParameter("page", page.toString())
             addQueryParameter("perPage", "18")
             addQueryParameter("orderBy", "updatedAt")
@@ -51,23 +52,22 @@ class QiScans : Iken(
         return GET(url, headers)
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(baseUrl + chapter.url, headersBuilder().add("rsc", "1").build())
-    }
+    @Serializable
+    class PageParseDto(
+        val url: String,
+        val order: Int,
+    )
 
     override fun pageListParse(response: Response): List<Page> {
-        return response.body.string().lines()
-            .mapNotNull { line ->
-                val jsonStartIndex = line.indexOf('{').takeIf { it != -1 } ?: return@mapNotNull null
-                val jsonString = line.substring(jsonStartIndex)
-                try {
-                    jsonString.parseAs<PageDto>().takeIf { it.url.isNotEmpty() }
-                } catch (e: Exception) {
-                    null
-                }
-            }
-            .sortedBy { it.order }
-            .mapIndexed { i, p -> Page(i, imageUrl = p.url) }
+        val document = response.asJsoup()
+
+        if (document.selectFirst("svg.lucide-lock") != null) {
+            throw Exception("Unlock chapter in webview")
+        }
+
+        return document.getNextJson("images").parseAs<List<PageParseDto>>().sortedBy { it.order }.mapIndexed { idx, p ->
+            Page(idx, imageUrl = p.url)
+        }
     }
 
     private var genresList: List<Pair<String, String>> = emptyList()
@@ -104,24 +104,26 @@ class QiScans : Iken(
         return FilterList(filters)
     }
 
-    private class SortFilter : SelectFilter(
-        "Sort",
-        "orderBy",
-        listOf(
-            Pair("Popularity", "totalViews"),
-            Pair("Latest", "updatedAt"),
-        ),
-    )
+    private class SortFilter :
+        SelectFilter(
+            "Sort",
+            "orderBy",
+            listOf(
+                Pair("Popularity", "totalViews"),
+                Pair("Latest", "updatedAt"),
+            ),
+        )
 
-    private class StatusFilter : SelectFilter(
-        "Status",
-        "seriesStatus",
-        listOf(
-            Pair("All", ""),
-            Pair("Ongoing", "ONGOING"),
-            Pair("Hiatus", "HIATUS"),
-            Pair("Completed", "COMPLETED"),
-            Pair("Dropped", "DROPPED"),
-        ),
-    )
+    private class StatusFilter :
+        SelectFilter(
+            "Status",
+            "seriesStatus",
+            listOf(
+                Pair("All", ""),
+                Pair("Ongoing", "ONGOING"),
+                Pair("Hiatus", "HIATUS"),
+                Pair("Completed", "COMPLETED"),
+                Pair("Dropped", "DROPPED"),
+            ),
+        )
 }

@@ -22,7 +22,7 @@ import java.util.regex.Pattern
 class HentaiFantasy : ParsedHttpSource() {
     override val name = "HentaiFantasy"
 
-    override val baseUrl = "https://www.hentaifantasy.it/index.php"
+    override val baseUrl = "https://hentaifantasy.it/index.php"
 
     override val lang = "it"
 
@@ -42,8 +42,7 @@ class HentaiFantasy : ParsedHttpSource() {
 
     override fun popularMangaSelector() = "div.group"
 
-    override fun popularMangaRequest(page: Int) =
-        GET("$baseUrl/most_downloaded/$page/", headers)
+    override fun popularMangaRequest(page: Int) = GET("$baseUrl/most_downloaded/$page/", headers)
 
     override fun popularMangaFromElement(element: Element): SManga {
         val manga = SManga.create()
@@ -59,12 +58,9 @@ class HentaiFantasy : ParsedHttpSource() {
 
     override fun latestUpdatesSelector() = popularMangaSelector()
 
-    override fun latestUpdatesRequest(page: Int) =
-        GET("$baseUrl/latest/$page/", headers)
+    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/latest/$page/", headers)
 
-    override fun latestUpdatesFromElement(element: Element): SManga {
-        return popularMangaFromElement(element)
-    }
+    override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
 
@@ -83,6 +79,7 @@ class HentaiFantasy : ParsedHttpSource() {
                             it.id.toString()
                         }
                         .forEach { tags.add(it) }
+
                 else -> {}
             }
         }
@@ -113,9 +110,7 @@ class HentaiFantasy : ParsedHttpSource() {
         return POST("$baseUrl/$searchPath", headers, form.build())
     }
 
-    override fun searchMangaFromElement(element: Element): SManga {
-        return popularMangaFromElement(element)
-    }
+    override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     override fun searchMangaNextPageSelector() = popularMangaNextPageSelector()
 
@@ -125,9 +120,11 @@ class HentaiFantasy : ParsedHttpSource() {
         document.select("div#tablelist > div.row").forEach { row ->
             when (row.select("div.cell > b").first()!!.text().trim()) {
                 "Autore" -> manga.author = row.select("div.cell > a").text().trim()
+
                 "Genere", "Tipo" -> row.select("div.cell > a > span.label").forEach {
                     genres.add(it.text().trim())
                 }
+
                 "Descrizione" -> manga.description = row.select("div.cell").last()!!.text().trim()
             }
         }
@@ -153,22 +150,22 @@ class HentaiFantasy : ParsedHttpSource() {
         return chapter
     }
 
-    private fun parseChapterDate(date: String): Long {
-        return when (date) {
-            "Oggi" -> {
-                Calendar.getInstance().timeInMillis
-            }
-            "Ieri" -> {
-                Calendar.getInstance().apply {
-                    add(Calendar.DAY_OF_YEAR, -1)
-                }.timeInMillis
-            }
-            else -> {
-                try {
-                    dateFormat.parse(date)?.time ?: 0L
-                } catch (e: ParseException) {
-                    0L
-                }
+    private fun parseChapterDate(date: String): Long = when (date) {
+        "Oggi" -> {
+            Calendar.getInstance().timeInMillis
+        }
+
+        "Ieri" -> {
+            Calendar.getInstance().apply {
+                add(Calendar.DAY_OF_YEAR, -1)
+            }.timeInMillis
+        }
+
+        else -> {
+            try {
+                dateFormat.parse(date)?.time ?: 0L
+            } catch (e: ParseException) {
+                0L
             }
         }
     }
@@ -189,9 +186,7 @@ class HentaiFantasy : ParsedHttpSource() {
         return pages
     }
 
-    override fun pageListParse(document: Document): List<Page> {
-        throw Exception("Not used")
-    }
+    override fun pageListParse(document: Document): List<Page> = throw Exception("Not used")
 
     override fun imageUrlRequest(page: Page) = GET(page.url)
 
@@ -204,9 +199,9 @@ class HentaiFantasy : ParsedHttpSource() {
         TagList("Generi", getTagList()),
     )
 
-    // Tags: 47
+    // Tags: 46
     // $("select[name='tag[]']:eq(0) > option").map((i, el) => `Tag("${$(el).text().trim()}", ${$(el).attr("value")})`).get().sort().join(",\n")
-    // on https://www.hentaifantasy.it/search/
+    // on https://hentaifantasy.it/tag/ahegao/
     private fun getTagList() = listOf(
         Tag("Ahegao", 56),
         Tag("Anal", 28),

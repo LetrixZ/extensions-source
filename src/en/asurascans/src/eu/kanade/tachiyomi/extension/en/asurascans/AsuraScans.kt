@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
@@ -13,22 +14,26 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import keiyoushi.utils.getPreferences
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonString
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import uy.kohesive.injekt.injectLazy
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.concurrent.thread
 
-class AsuraScans : ParsedHttpSource(), ConfigurableSource {
+class AsuraScans :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val name = "Asura Scans"
 
@@ -62,11 +67,14 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
         }
     }
 
-    private val json: Json by injectLazy()
-
     override val client = network.cloudflareClient.newBuilder()
         .addInterceptor(::forceHighQualityInterceptor)
         .rateLimit(2, 2)
+        .build()
+
+    // separate client for API calls with minimal rate limiting
+    private val apiClient = network.cloudflareClient.newBuilder()
+        .rateLimit(10, 1)
         .build()
 
     private var failedHighQuality = false
@@ -97,8 +105,7 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    override fun popularMangaRequest(page: Int): Request =
-        GET("$baseUrl/series?genres=&status=-1&types=-1&order=rating&page=$page", headers)
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/series?genres=&status=-1&types=-1&order=rating&page=$page", headers)
 
     override fun popularMangaSelector() = searchMangaSelector()
 
@@ -106,12 +113,16 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
 
     override fun popularMangaNextPageSelector() = searchMangaNextPageSelector()
 
-    override fun latestUpdatesRequest(page: Int): Request =
-        GET("$baseUrl/series?genres=&status=-1&types=-1&order=update&page=$page", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/page/$page", headers)
 
-    override fun latestUpdatesSelector() = searchMangaSelector()
+    override fun latestUpdatesSelector() = "div.grid.grid-rows-1.grid-cols-1 > div.w-full"
 
-    override fun latestUpdatesFromElement(element: Element) = searchMangaFromElement(element)
+    override fun latestUpdatesFromElement(element: Element) = SManga.create().apply {
+        val link = element.selectFirst("a[href^=/series/]")!!
+        setUrlWithoutDomain(link.attr("abs:href").toPermSlugIfNeeded())
+        title = element.selectFirst("span.text-\\[15px\\] a")!!.text()
+        thumbnail_url = element.selectFirst("img")?.attr("abs:src")
+    }
 
     override fun latestUpdatesNextPageSelector() = searchMangaNextPageSelector()
 
@@ -196,7 +207,7 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
         thread {
             try {
                 val response = client.newCall(GET("$apiUrl/series/filters", headers)).execute()
-                val filters = json.decodeFromString<FiltersDto>(response.body.string())
+                val filters = response.body.string().parseAs<FiltersDto>()
 
                 genresList = filters.genres.filter { it.id > 0 }.map { it.name.trim() to it.id }
                 statusesList = filters.statuses.map { it.name.trim() to it.id }
@@ -266,14 +277,16 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
 
     override fun chapterListRequest(manga: SManga) = mangaDetailsRequest(manga)
 
-    override fun chapterListSelector() =
-        if (preferences.hidePremiumChapters()) "div.scrollbar-thumb-themecolor > div.group:not(:has(svg))" else "div.scrollbar-thumb-themecolor > div.group"
+    override fun chapterListSelector() = if (preferences.hidePremiumChapters()) "div.scrollbar-thumb-themecolor > div.group:not(:has(svg))" else "div.scrollbar-thumb-themecolor > div.group"
 
     override fun chapterFromElement(element: Element) = SChapter.create().apply {
         setUrlWithoutDomain(element.selectFirst("a")!!.attr("abs:href").toPermSlugIfNeeded())
         val chNumber = element.selectFirst("h3")!!.ownText()
         val chTitle = element.select("h3 > span").joinToString(" ") { it.ownText() }
-        name = if (chTitle.isBlank()) chNumber else "$chNumber - $chTitle"
+        val isPremiumChapter = element.selectFirst("svg") != null
+        val baseName = if (chTitle.isBlank()) chNumber else "$chNumber - $chTitle"
+        name = if (isPremiumChapter) "🔒 $baseName" else baseName
+
         date_upload = try {
             val text = element.selectFirst("h3 + h3")!!.ownText()
             val cleanText = text.replace(CLEAN_DATE_REGEX, "$1")
@@ -295,8 +308,31 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
     override fun pageListParse(document: Document): List<Page> {
         val scriptData = document.select("script:containsData(self.__next_f.push)")
             .joinToString("") { it.data().substringAfter("\"").substringBeforeLast("\"") }
-        val pagesData = PAGES_REGEX.find(scriptData)?.groupValues?.get(1) ?: throw Exception("Failed to find chapter pages")
-        val pageList = json.decodeFromString<List<PageDto>>(pagesData.unescape()).sortedBy { it.order }
+
+        val chapterDataMatch = CHAPTER_DATA_REGEX.find(scriptData)
+        val pagesData = PAGES_REGEX.find(scriptData)?.groupValues?.get(1)
+
+        if (chapterDataMatch != null && pagesData != null) {
+            // check for premium chapter
+            val chapterId = chapterDataMatch.groupValues[1].toIntOrNull()
+            val pages = try {
+                pagesData.unescape().parseAs<List<PageDto>>()
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+            // If unlocked, fetch info via API
+            if (chapterId != null && pages.isEmpty()) {
+                return fetchChapterImages(chapterId)
+            }
+        }
+
+        // continue with normal chapter handling
+        if (pagesData == null) {
+            throw Exception("Failed to find chapter pages")
+        }
+
+        val pageList = pagesData.unescape().parseAs<List<PageDto>>().sortedBy { it.order }
         return pageList.mapIndexed { i, page ->
             val newUrl = page.url.toHttpUrlOrNull()?.run {
                 newBuilder()
@@ -309,12 +345,94 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
         }
     }
 
+    private fun fetchChapterImages(chapterId: Int): List<Page> {
+        val xsrfToken = getXsrfToken()
+        val unlockPayload = UnlockRequestDto(chapterId).toJsonString()
+
+        val unlockResponse = apiClient.newCall(
+            buildApiRequest("$apiUrl/chapter/unlock", unlockPayload, xsrfToken),
+        ).execute()
+
+        val unlockData = unlockResponse.parseAs<UnlockResponseDto>("Failed to load chapter")
+
+        if (!unlockData.success) {
+            throw Exception("Chapter locked. Please unlock in WebView first.")
+        }
+
+        val unlockToken = unlockData.data.unlockToken
+        val pages = unlockData.data.pages.sortedBy { it.order }
+
+        return pages.mapIndexed { index, page ->
+            val imageUrl = getPageImageUrl(page.id, chapterId, unlockToken, xsrfToken)
+            Page(index, imageUrl = imageUrl)
+        }
+    }
+
+    private fun getPageImageUrl(mediaId: Int, chapterId: Int, unlockToken: String, xsrfToken: String): String {
+        val mediaPayload = MediaRequestDto(mediaId, chapterId, unlockToken, "max-quality").toJsonString()
+
+        val mediaResponse = apiClient.newCall(
+            buildApiRequest("$apiUrl/media", mediaPayload, xsrfToken),
+        ).execute()
+
+        return mediaResponse.parseAs<MediaResponseDto>("Failed to get image URL").data
+    }
+
+    private fun buildApiRequest(url: String, jsonPayload: String, xsrfToken: String): Request = POST(
+        url,
+        headers.newBuilder()
+            .add("X-XSRF-TOKEN", xsrfToken)
+            .add("Accept", "application/json")
+            .add("X-Requested-With", "XMLHttpRequest")
+            .build(),
+        jsonPayload.toRequestBody("application/json".toMediaType()),
+    )
+
+    private inline fun <reified T> Response.parseAs(errorPrefix: String): T {
+        if (!isSuccessful) {
+            close()
+            val errorMsg = when (code) {
+                401 -> "Not logged in. Please log in via WebView."
+                403 -> "No premium subscription."
+                419 -> "Session expired. Please log in again via WebView."
+                else -> "$errorPrefix (HTTP $code)"
+            }
+            throw Exception(errorMsg)
+        }
+
+        val responseBody = body.string()
+
+        return try {
+            responseBody.parseAs<T>()
+        } catch (e: Exception) {
+            throw Exception("$errorPrefix: Invalid response")
+        }
+    }
+
+    private fun getXsrfToken(): String {
+        val xsrfToken = sequence {
+            apiUrl.toHttpUrlOrNull()?.let { yield(it) }
+            baseUrl.toHttpUrlOrNull()?.let { yield(it) }
+        }.mapNotNull { httpUrl ->
+            client.cookieJar.loadForRequest(httpUrl)
+                .firstOrNull { it.name.equals("XSRF-TOKEN", ignoreCase = true) }
+                ?.value
+        }.firstOrNull()
+
+        if (xsrfToken == null) {
+            throw Exception("Not logged in. Please log in via WebView to access premium chapters.")
+        }
+
+        return runCatching {
+            URLDecoder.decode(xsrfToken, StandardCharsets.UTF_8.name())
+        }.getOrDefault(xsrfToken)
+    }
+
     override fun imageUrlParse(document: Document) = throw UnsupportedOperationException()
 
     private enum class FiltersState { NOT_FETCHED, FETCHING, FETCHED }
 
-    private inline fun <reified R> List<*>.firstInstanceOrNull(): R? =
-        filterIsInstance<R>().firstOrNull()
+    private inline fun <reified R> List<*>.firstInstanceOrNull(): R? = filterIsInstance<R>().firstOrNull()
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         SwitchPreferenceCompat(screen.context).apply {
@@ -346,14 +464,14 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
         get() {
             val jsonMap = getString(PREF_SLUG_MAP, "{}")!!
             return try {
-                json.decodeFromString<Map<String, String>>(jsonMap).toMutableMap()
+                jsonMap.parseAs<Map<String, String>>().toMutableMap()
             } catch (_: Exception) {
                 mutableMapOf()
             }
         }
         set(newSlugMap) {
             edit()
-                .putString(PREF_SLUG_MAP, json.encodeToString(newSlugMap))
+                .putString(PREF_SLUG_MAP, newSlugMap.toJsonString())
                 .apply()
         }
 
@@ -375,13 +493,14 @@ class AsuraScans : ParsedHttpSource(), ConfigurableSource {
         return this.replace(slug, absSlug)
     }
 
-    private fun String.unescape(): String {
-        return UNESCAPE_REGEX.replace(this, "$1")
-    }
+    private fun String.unescape(): String = UNESCAPE_REGEX.replace(this, "$1")
 
     companion object {
         private val UNESCAPE_REGEX = """\\(.)""".toRegex()
         private val PAGES_REGEX = """\\"pages\\":(\[.*?])""".toRegex()
+
+        // Match chapter metadata: "chapter":{"id":123..."is_early_access":true}
+        private val CHAPTER_DATA_REGEX = """\\"chapter\\":\{\\"id\\":(\d+).*?\\"is_early_access\\":(true|false)""".toRegex(RegexOption.DOT_MATCHES_ALL)
         private val CLEAN_DATE_REGEX = """(\d+)(st|nd|rd|th)""".toRegex()
         private val OLD_FORMAT_MANGA_REGEX = """^/manga/(\d+-)?([^/]+)/?$""".toRegex()
         private val OLD_FORMAT_CHAPTER_REGEX = """^/(\d+-)?[^/]*-chapter-\d+(-\d+)*/?$""".toRegex()

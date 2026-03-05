@@ -8,24 +8,28 @@ import okhttp3.FormBody
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Response
+import org.jsoup.nodes.Element
 import java.io.IOException
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-class LeitorDeManga : Madara(
-    "Leitor de Mangá",
-    "https://leitordemanga.com",
-    "pt-BR",
-    SimpleDateFormat("dd/MM/yyyy", Locale("pt", "BR")),
-) {
+class LeitorDeManga :
+    Madara(
+        "Leitor de Mangá",
+        "https://leitordemanga.com",
+        "pt-BR",
+        SimpleDateFormat("dd/MM/yyyy", Locale("pt", "BR")),
+    ) {
     override val mangaSubString = "ler-manga"
 
     override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(1, 2, TimeUnit.SECONDS)
+        .rateLimit(3, 2, TimeUnit.SECONDS)
         .addInterceptor(::jsChallengeInterceptor)
         .build()
+
+    override fun imageFromElement(element: Element): String? = super.imageFromElement(element)?.replace("http://", "https://")
 
     // Linked to src/en/yakshascans
     private fun jsChallengeInterceptor(chain: Interceptor.Chain): Response {
@@ -66,12 +70,10 @@ class LeitorDeManga : Madara(
         }
     }
 
-    private fun String.sha256(): String {
-        return MessageDigest
-            .getInstance("SHA-256")
-            .digest(toByteArray())
-            .fold("", { str, it -> str + "%02x".format(it) })
-    }
+    private fun String.sha256(): String = MessageDigest
+        .getInstance("SHA-256")
+        .digest(toByteArray())
+        .fold("", { str, it -> str + "%02x".format(it) })
 
     companion object {
         private const val MAX_ATTEMPT = 5

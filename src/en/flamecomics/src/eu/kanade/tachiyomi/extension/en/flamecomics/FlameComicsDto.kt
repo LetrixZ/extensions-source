@@ -14,13 +14,31 @@ class NewBuildID(
 )
 
 @Serializable
-class MangaPageData(
+class MangaDetailsResponseData(
+    val pageProps: PageProps,
+) {
+    @Serializable
+    class PageProps(
+        val series: Series,
+    )
+}
+
+@Serializable
+class ChapterListResponseData(
     val pageProps: PageProps,
 ) {
     @Serializable
     class PageProps(
         val chapters: List<Chapter>,
-        val series: Series,
+    )
+
+    @Serializable
+    data class Chapter(
+        val chapter: Double,
+        val title: String?,
+        val release_date: Long,
+        val series_id: Int,
+        val token: String,
     )
 }
 
@@ -60,7 +78,16 @@ class ChapterPageData(
 ) {
     @Serializable
     class PageProps(
-        val chapter: Chapter,
+        val chapter: ChapterPage,
+    )
+
+    @Serializable
+    data class ChapterPage(
+        val release_date: Long,
+        val series_id: Int,
+        val token: String,
+        @Serializable(with = KeysToListSerializer::class)
+        val images: List<Page>,
     )
 }
 
@@ -68,27 +95,16 @@ class ChapterPageData(
 class Series(
     val title: String,
     val altTitles: List<String>?,
-    val description: String,
+    val description: String?,
     val cover: String,
     val type: String,
     val tags: List<String>?,
     val author: List<String>?,
     val artist: List<String>?,
     val status: String,
-    val series_id: Int,
-    val last_edit: String,
+    val series_id: Int?,
+    val last_edit: Long,
     val views: Int?,
-)
-
-@Serializable
-class Chapter(
-    val chapter: Double,
-    val title: String?,
-    val release_date: Long,
-    val series_id: Int,
-    val token: String,
-    @Serializable(with = KeysToListSerializer::class)
-    val images: List<Page>,
 )
 
 @Serializable
@@ -99,9 +115,7 @@ class Page(
 class KeysToListSerializer : KSerializer<List<Page>> {
     private val listSer = MapSerializer(String.serializer(), Page.serializer())
     override val descriptor: SerialDescriptor = listSer.descriptor
-    override fun deserialize(decoder: Decoder): List<Page> {
-        return listSer.deserialize(decoder).flatMap { k -> listOf(k.value) }
-    }
+    override fun deserialize(decoder: Decoder): List<Page> = listSer.deserialize(decoder).flatMap { k -> listOf(k.value) }
 
     override fun serialize(encoder: Encoder, value: List<Page>) {}
 }

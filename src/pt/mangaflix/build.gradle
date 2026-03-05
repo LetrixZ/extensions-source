@@ -1,0 +1,8 @@
+ext {
+    extName = 'Manga Flix'
+    extClass = '.MangaFlix'
+    extVersionCode = 2
+    isNsfw = true
+}
+
+apply from: "$rootDir/common.gradle"
