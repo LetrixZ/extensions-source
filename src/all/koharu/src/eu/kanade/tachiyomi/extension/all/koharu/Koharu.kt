@@ -1,6 +1,13 @@
 package eu.kanade.tachiyomi.extension.all.koharu
 
+import android.annotation.SuppressLint
+import android.app.Application
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -31,7 +38,6 @@ import keiyoushi.utils.getPreferencesLazy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -40,25 +46,37 @@ import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class Koharu(
     override val lang: String = "all",
     private val searchLang: String = "",
-) : HttpSource(), ConfigurableSource {
+) : HttpSource(),
+    ConfigurableSource {
+
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     override val name = "SchaleNetwork"
 
-    override val baseUrl = "https://schale.network"
+    override val baseUrl: String
+        get() {
+            val preferenceValue = preferences.getString(PREF_MIRROR, MIRROR_PREF_DEFAULT) ?: MIRROR_PREF_DEFAULT
+            val mirror = preferenceValue.toIntOrNull()?.let { index ->
+                mirrors[index.coerceAtMost(mirrors.lastIndex)]
+            } ?: preferenceValue.takeIf { it in mirrors } ?: MIRROR_PREF_DEFAULT
+
+            return "https://$mirror"
+        }
 
     override val id = if (lang == "en") 1484902275639232927 else super.id
 
-    private val apiUrl = baseUrl.replace("://", "://api.")
+    private val apiUrl = API_DOMAIN
 
     private val apiBooksUrl = "$apiUrl/books"
-
-    private val authUrl = "${baseUrl.replace("://", "://auth.")}/clearance"
 
     override val supportsLatest = true
 
@@ -67,20 +85,18 @@ class Koharu(
     private val shortenTitleRegex = Regex("""(\[[^]]*]|[({][^)}]*[)}])""")
     private fun String.shortenTitle() = replace(shortenTitleRegex, "").trim()
 
-    private val preferences: SharedPreferences by getPreferencesLazy()
-
     private fun quality() = preferences.getString(PREF_IMAGERES, "1280")!!
 
     private fun remadd() = preferences.getBoolean(PREF_REM_ADD, false)
 
     private fun alwaysExcludeTags() = preferences.getString(PREF_EXCLUDE_TAGS, "")
 
-    private var _domainUrl: String? = null
-    internal val domainUrl: String
+    private var domainUrlCache: String? = null
+    private val domainUrl: String
         get() {
-            return _domainUrl ?: run {
+            return domainUrlCache ?: run {
                 val domain = getDomain()
-                _domainUrl = domain
+                domainUrlCache = domain
                 domain
             }
         }
@@ -108,11 +124,63 @@ class Koharu(
         .rateLimit(3)
         .build()
 
-    private val interceptedClient: OkHttpClient
-        get() = network.cloudflareClient.newBuilder()
-            .addInterceptor(TurnstileInterceptor(client, domainUrl, authUrl, lazyHeaders["User-Agent"]))
-            .rateLimit(3)
-            .build()
+    private val clearanceClient = network.cloudflareClient.newBuilder()
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val url = request.url
+            val clearance = getClearance()
+                ?: throw IOException("Open webview to refresh token")
+
+            val newUrl = url.newBuilder()
+                .setQueryParameter("crt", clearance)
+                .build()
+            val newRequest = request.newBuilder()
+                .url(newUrl)
+                .build()
+
+            val response = chain.proceed(newRequest)
+
+            if (response.code !in listOf(400, 403)) {
+                return@addInterceptor response
+            }
+            response.close()
+            _clearance = null
+            throw IOException("Open webview to refresh token")
+        }
+        .rateLimit(3)
+        .build()
+
+    private val context: Application by injectLazy()
+    private val handler by lazy { Handler(Looper.getMainLooper()) }
+    private var _clearance: String? = null
+
+    @SuppressLint("SetJavaScriptEnabled")
+    fun getClearance(): String? {
+        _clearance?.also { return it }
+        val latch = CountDownLatch(1)
+        handler.post {
+            val webview = WebView(context)
+            with(webview.settings) {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                blockNetworkImage = true
+            }
+            webview.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    view!!.evaluateJavascript("window.localStorage.getItem('clearance')") { clearance ->
+                        webview.stopLoading()
+                        webview.destroy()
+                        _clearance = clearance.takeUnless { it == "null" }?.removeSurrounding("\"")
+                        latch.countDown()
+                    }
+                }
+            }
+            webview.loadUrl("$domainUrl/")
+        }
+        latch.await(10, TimeUnit.SECONDS)
+        return _clearance
+    }
 
     private fun getManga(book: Entry) = SManga.create().apply {
         setUrlWithoutDomain("${book.id}/${book.key}")
@@ -128,12 +196,10 @@ class Koharu(
             alt2: DataKey?,
             alt3: DataKey?,
             alt4: DataKey?,
-        ): Pair<Int?, String?> {
-            return Pair(
-                ori?.id ?: alt1?.id ?: alt2?.id ?: alt3?.id ?: alt4?.id,
-                ori?.key ?: alt1?.key ?: alt2?.key ?: alt3?.key ?: alt4?.key,
-            )
-        }
+        ): Pair<Int?, String?> = Pair(
+            ori?.id ?: alt1?.id ?: alt2?.id ?: alt3?.id ?: alt4?.id,
+            ori?.key ?: alt1?.key ?: alt2?.key ?: alt3?.key ?: alt4?.key,
+        )
         val (id, public_key) = when (quality()) {
             "1600" -> getIPK(data.`1600`, data.`1280`, data.`0`, data.`980`, data.`780`)
             "1280" -> getIPK(data.`1280`, data.`1600`, data.`0`, data.`980`, data.`780`)
@@ -154,7 +220,7 @@ class Koharu(
             else -> "0"
         }
 
-        val imagesResponse = interceptedClient.newCall(GET("$apiBooksUrl/data/$entryId/$entryKey/$id/$public_key/$realQuality?crt=$token", lazyHeaders)).execute()
+        val imagesResponse = clearanceClient.newCall(GET("$apiBooksUrl/data/$entryId/$entryKey/$id/$public_key/$realQuality", lazyHeaders)).execute()
         val images = imagesResponse.parseAs<ImagesInfo>() to realQuality
         return images
     }
@@ -205,17 +271,16 @@ class Koharu(
 
     // Search
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return when {
-            query.startsWith(PREFIX_ID_KEY_SEARCH) -> {
-                val ipk = query.removePrefix(PREFIX_ID_KEY_SEARCH)
-                val response = client.newCall(GET("$apiBooksUrl/detail/$ipk", lazyHeaders)).execute()
-                Observable.just(
-                    MangasPage(listOf(mangaDetailsParse(response)), false),
-                )
-            }
-            else -> super.fetchSearchManga(page, query, filters)
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = when {
+        query.startsWith(PREFIX_ID_KEY_SEARCH) -> {
+            val ipk = query.removePrefix(PREFIX_ID_KEY_SEARCH)
+            val response = client.newCall(GET("$apiBooksUrl/detail/$ipk", lazyHeaders)).execute()
+            Observable.just(
+                MangasPage(listOf(mangaDetailsParse(response)), false),
+            )
         }
+
+        else -> super.fetchSearchManga(page, query, filters)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -265,6 +330,7 @@ class Koharu(
                             }
                         }
                     }
+
                     else -> {}
                 }
             }
@@ -330,9 +396,7 @@ class Koharu(
 
     // Details
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET("$apiBooksUrl/detail/${manga.url}", lazyHeaders)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET("$apiBooksUrl/detail/${manga.url}", lazyHeaders)
 
     override fun mangaDetailsParse(response: Response): SManga {
         val mangaDetail = response.parseAs<MangaDetail>()
@@ -346,9 +410,7 @@ class Koharu(
 
     // Chapter
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET("$apiBooksUrl/detail/${manga.url}", lazyHeaders)
-    }
+    override fun chapterListRequest(manga: SManga): Request = GET("$apiBooksUrl/detail/${manga.url}", lazyHeaders)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val manga = response.parseAs<MangaDetail>()
@@ -365,17 +427,13 @@ class Koharu(
 
     // Page List
 
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        return interceptedClient.newCall(pageListRequest(chapter))
-            .asObservableSuccess()
-            .map { response ->
-                pageListParse(response)
-            }
-    }
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = clearanceClient.newCall(pageListRequest(chapter))
+        .asObservableSuccess()
+        .map { response ->
+            pageListParse(response)
+        }
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return POST("$apiBooksUrl/detail/${chapter.url}?crt=$token", lazyHeaders)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = POST("$apiBooksUrl/detail/${chapter.url}", lazyHeaders)
 
     override fun pageListParse(response: Response): List<Page> {
         val mangaData = response.parseAs<MangaData>()
@@ -389,15 +447,27 @@ class Koharu(
         }
     }
 
-    override fun imageRequest(page: Page): Request {
-        return GET(page.imageUrl!!, lazyHeaders)
-    }
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!, lazyHeaders)
 
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     // Settings
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        ListPreference(screen.context).apply {
+            key = PREF_MIRROR
+            title = "Preferred Mirror"
+            entries = mirrors
+            entryValues = mirrors
+            setDefaultValue(MIRROR_PREF_DEFAULT)
+            summary = "%s"
+
+            setOnPreferenceChangeListener { _, _ ->
+                Toast.makeText(screen.context, "Restart the app to apply changes", Toast.LENGTH_LONG).show()
+                true
+            }
+        }.also(screen::addPreference)
+
         ListPreference(screen.context).apply {
             key = PREF_IMAGERES
             title = "Image Resolution"
@@ -423,18 +493,23 @@ class Koharu(
         }.also(screen::addPreference)
     }
 
-    private inline fun <reified T> Response.parseAs(): T {
-        return json.decodeFromString(body.string())
-    }
+    private inline fun <reified T> Response.parseAs(): T = json.decodeFromString(body.string())
 
     companion object {
         const val PREFIX_ID_KEY_SEARCH = "id:"
+        private const val PREF_MIRROR = "pref_mirror"
+        private const val MIRROR_PREF_DEFAULT = "schale.network"
+        private const val API_DOMAIN = "https://api.schale.network"
+        private val mirrors = arrayOf(
+            MIRROR_PREF_DEFAULT,
+            "anchira.to",
+            "gehenna.jp",
+            "niyaniya.moe",
+            "shupogaki.moe",
+        )
         private const val PREF_IMAGERES = "pref_image_quality"
         private const val PREF_REM_ADD = "pref_remove_additional"
         private const val PREF_EXCLUDE_TAGS = "pref_exclude_tags"
-
-        internal var token: String? = null
-        internal var authorization: String? = null
 
         internal val dateReformat = SimpleDateFormat("EEEE, d MMM yyyy HH:mm (z)", Locale.ENGLISH)
     }

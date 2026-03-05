@@ -3,8 +3,8 @@ ext {
     extClass = '.BarManga'
     themePkg = 'madara'
     baseUrl = 'https://archiviumbar.com'
-    overrideVersionCode = 2
-    isNsfw = false
+    overrideVersionCode = 8
+    isNsfw = true
 }
 
 apply from: "$rootDir/common.gradle"

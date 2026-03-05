@@ -8,7 +8,9 @@ import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 
-class Ngomik : MangaThemesia("Ngomik", "https://ngomik.mom", "id", "/manga") {
+class Ngomik : MangaThemesia("Ngomik (unoriginal)", "https://ngomik.mom", "id", "/manga") {
+
+    override val id = 5360960267485387879
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.163 Safari/537.36"
 
@@ -26,18 +28,23 @@ class Ngomik : MangaThemesia("Ngomik", "https://ngomik.mom", "id", "/manga") {
                 is AuthorFilter -> {
                     url.addQueryParameter("author", filter.state)
                 }
+
                 is YearFilter -> {
                     url.addQueryParameter("yearx", filter.state)
                 }
+
                 is StatusFilter -> {
                     url.addQueryParameter("status", filter.selectedValue())
                 }
+
                 is TypeFilter -> {
                     url.addQueryParameter("type", filter.selectedValue())
                 }
+
                 is OrderByFilter -> {
                     url.addQueryParameter("order", filter.selectedValue())
                 }
+
                 is GenreListFilter -> {
                     filter.state
                         .filter { it.state != Filter.TriState.STATE_IGNORE }
@@ -46,12 +53,14 @@ class Ngomik : MangaThemesia("Ngomik", "https://ngomik.mom", "id", "/manga") {
                             url.addQueryParameter("genre[]", value)
                         }
                 }
+
                 // if site has project page, default value "hasProjectPage" = false
                 is ProjectFilter -> {
                     if (filter.selectedValue() == "project-filter-on") {
                         url.setPathSegment(0, projectPageString.substring(1))
                     }
                 }
+
                 else -> { /* Do Nothing */ }
             }
         }

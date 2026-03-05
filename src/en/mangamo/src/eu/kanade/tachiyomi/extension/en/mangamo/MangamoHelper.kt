@@ -12,6 +12,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.serializer
 import okhttp3.Headers
+import java.net.URLEncoder
 
 class MangamoHelper(headers: Headers) {
 
@@ -28,14 +29,13 @@ class MangamoHelper(headers: Headers) {
         }
 
         @Suppress("UNCHECKED_CAST")
-        inline fun <reified T> String.parseJson(): T {
-            return when (T::class) {
-                DocumentDto::class -> json.decodeFromString<T>(
-                    DocumentSerializer(serializer<T>() as KSerializer<out DocumentDto<out Any?>>) as KSerializer<T>,
-                    this,
-                )
-                else -> json.decodeFromString<T>(this)
-            }
+        inline fun <reified T> String.parseJson(): T = when (T::class) {
+            DocumentDto::class -> json.decodeFromString<T>(
+                DocumentSerializer(serializer<T>() as KSerializer<out DocumentDto<out Any?>>) as KSerializer<T>,
+                this,
+            )
+
+            else -> json.decodeFromString<T>(this)
         }
     }
 
@@ -45,28 +45,27 @@ class MangamoHelper(headers: Headers) {
 
     private fun getCatalogUrl(series: SeriesDto): String {
         val lowercaseHyphenated = series.name_lowercase!!.replace(' ', '-')
-        return "/catalog/$lowercaseHyphenated"
+        return "/catalog/${URLEncoder.encode(lowercaseHyphenated, "utf-8")}"
     }
 
-    fun getSeriesUrl(series: SeriesDto): String {
-        return "${getCatalogUrl(series)}?${MangamoConstants.SERIES_QUERY_PARAM}=${series.id}"
-    }
+    fun getSeriesUrl(series: SeriesDto): String = "${getCatalogUrl(series)}?${MangamoConstants.SERIES_QUERY_PARAM}=${series.id}"
 
-    fun getChapterUrl(chapter: ChapterDto): String {
-        return "?${MangamoConstants.SERIES_QUERY_PARAM}=${chapter.seriesId}&${MangamoConstants.CHAPTER_QUERY_PARAM}=${chapter.id}"
-    }
+    fun getChapterUrl(chapter: ChapterDto): String = "?${MangamoConstants.SERIES_QUERY_PARAM}=${chapter.seriesId}&${MangamoConstants.CHAPTER_QUERY_PARAM}=${chapter.id}"
 
-    fun getSeriesStatus(series: SeriesDto): Int =
-        when (series.releaseStatusTag) {
-            "Ongoing" -> SManga.ONGOING
-            "series-complete" -> SManga.COMPLETED
-            "Completed" -> SManga.COMPLETED
-            "Paused" -> SManga.ON_HIATUS
-            else ->
-                if (series.ongoing == true) {
-                    SManga.ONGOING
-                } else {
-                    SManga.UNKNOWN
-                }
-        }
+    fun getSeriesStatus(series: SeriesDto): Int = when (series.releaseStatusTag) {
+        "Ongoing" -> SManga.ONGOING
+
+        "series-complete" -> SManga.COMPLETED
+
+        "Completed" -> SManga.COMPLETED
+
+        "Paused" -> SManga.ON_HIATUS
+
+        else ->
+            if (series.ongoing == true) {
+                SManga.ONGOING
+            } else {
+                SManga.UNKNOWN
+            }
+    }
 }

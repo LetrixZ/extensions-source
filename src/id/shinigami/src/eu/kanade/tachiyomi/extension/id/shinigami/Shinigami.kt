@@ -23,7 +23,7 @@ class Shinigami : HttpSource() {
 
     override val name = "Shinigami"
 
-    override val baseUrl = "https://app.shinigami.asia"
+    override val baseUrl = "https://09.shinigami.asia"
 
     private val apiUrl = "https://api.shngm.io"
 
@@ -75,7 +75,7 @@ class Shinigami : HttpSource() {
         val rootObject = response.parseAs<ShinigamiBrowseDto>()
         val projectList = rootObject.data.map(::popularMangaFromObject)
 
-        val hasNextPage = rootObject.meta.page < rootObject.meta.totalPage
+        val hasNextPage = rootObject.meta.totalPage?.let { rootObject.meta.page < it } ?: false
 
         return MangasPage(projectList, hasNextPage)
     }
@@ -107,16 +107,70 @@ class Shinigami : HttpSource() {
             url.addQueryParameter("q", query)
         }
 
-        // TODO: search by tag/genre/status/etc
+        filters.filterIsInstance<UriFilter>().forEach {
+            it.addToUri(url)
+        }
 
         return GET(url.build(), apiHeaders)
     }
 
     override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
-    override fun getMangaUrl(manga: SManga): String {
-        return "$baseUrl/series/${manga.url}"
-    }
+    override fun getFilterList(): FilterList = FilterList(
+        SortFilter(),
+        SortOrderFilter(),
+        StatusFilter(),
+        FormatFilter(),
+        TypeFilter(),
+        GenreFilter(getGenres()),
+    )
+
+    private fun getGenres(): Array<Pair<String, String>> = arrayOf(
+        Pair("Action", "action"),
+        Pair("Adaptation", "adaptation"),
+        Pair("Adult", "adult"),
+        Pair("Adventure", "adventure"),
+        Pair("Comedy", "comedy"),
+        Pair("Cooking", "cooking"),
+        Pair("Crime", "crime"),
+        Pair("Demon", "demon"),
+        Pair("Demons", "demons"),
+        Pair("Drama", "drama"),
+        Pair("Ecchi", "ecchi"),
+        Pair("Fantasy", "fantasy"),
+        Pair("Fight", "fight"),
+        Pair("Game", "game"),
+        Pair("Gender Bender", "gender-bender"),
+        Pair("Harem", "harem"),
+        Pair("Historical", "historical"),
+        Pair("Horror", "horror"),
+        Pair("Isekai", "isekai"),
+        Pair("Magic", "magic"),
+        Pair("Martial Arts", "martial-arts"),
+        Pair("Mature", "mature"),
+        Pair("Mecha", "mecha"),
+        Pair("Medical", "medical"),
+        Pair("Murim", "murim"),
+        Pair("Mystery", "mystery"),
+        Pair("Philosophical", "philosophical"),
+        Pair("Psychological", "psychological"),
+        Pair("Regression", "regression"),
+        Pair("Revenge", "revenge"),
+        Pair("Romance", "romance"),
+        Pair("School Life", "school-life"),
+        Pair("Sci-fi", "sci-fi"),
+        Pair("Seinen", "seinen"),
+        Pair("Shoujo", "shoujo"),
+        Pair("Shounen", "shounen"),
+        Pair("Slice of Life", "slice-of-life"),
+        Pair("Smut", "smut"),
+        Pair("Sports", "sports"),
+        Pair("Supernatural", "supernatural"),
+        Pair("Thriller", "thriller"),
+        Pair("Tragedy", "tragedy"),
+    )
+
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/series/${manga.url}"
 
     override fun mangaDetailsRequest(manga: SManga): Request {
         // Migration from old web urls to the new api based
@@ -143,17 +197,13 @@ class Shinigami : HttpSource() {
         }
     }
 
-    private fun Int.toStatus(): Int {
-        return when (this) {
-            1 -> SManga.ONGOING
-            2 -> SManga.COMPLETED
-            else -> SManga.UNKNOWN
-        }
+    private fun Int.toStatus(): Int = when (this) {
+        1 -> SManga.ONGOING
+        2 -> SManga.COMPLETED
+        else -> SManga.UNKNOWN
     }
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET("$apiUrl/v1/chapter/${manga.url}/list?page_size=3000", apiHeaders)
-    }
+    override fun chapterListRequest(manga: SManga): Request = GET("$apiUrl/v1/chapter/${manga.url}/list?page_size=3000", apiHeaders)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val result = response.parseAs<ShinigamiChapterListDto>()

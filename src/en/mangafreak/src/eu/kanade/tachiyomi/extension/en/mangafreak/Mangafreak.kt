@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -22,7 +23,7 @@ class Mangafreak : ParsedHttpSource() {
 
     override val lang: String = "en"
 
-    override val baseUrl: String = "https://ww1.mangafreak.me"
+    override val baseUrl: String = "https://ww2.mangafreak.me"
 
     override val supportsLatest: Boolean = true
 
@@ -35,21 +36,17 @@ class Mangafreak : ParsedHttpSource() {
         .followRedirects(true)
         .build()
 
-    private fun mangaFromElement(element: Element, urlSelector: String): SManga {
-        return SManga.create().apply {
-            thumbnail_url = element.select("img").attr("abs:src")
-            element.select(urlSelector).apply {
-                title = text()
-                url = attr("href")
-            }
+    private fun mangaFromElement(element: Element, urlSelector: String): SManga = SManga.create().apply {
+        thumbnail_url = element.select("img").attr("abs:src")
+        element.select(urlSelector).apply {
+            title = text()
+            url = attr("href")
         }
     }
 
     // Popular
 
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/Genre/All/$page", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/Genre/All/$page", headers)
     override fun popularMangaNextPageSelector(): String = "a.next_p"
     override fun popularMangaSelector(): String = "div.ranking_item"
     override fun popularMangaFromElement(element: Element): SManga = mangaFromElement(element, "a")
@@ -57,15 +54,48 @@ class Mangafreak : ParsedHttpSource() {
     // Latest
 
     override fun latestUpdatesRequest(page: Int): Request {
-        return GET("$baseUrl/Latest_Releases/$page", headers)
+        val url = if (page == 1) {
+            baseUrl
+        } else {
+            // Page 2 on Latest_Releases is actually /Latest_Releases/2
+            // But since we use Home for page 1, we might miss some items or have duplicates
+            // if we jump straight to page 2 of Latest_Releases.
+            // However, typically users just want the latest stuff.
+            "$baseUrl/Latest_Releases/$page"
+        }
+        return GET(url, headers)
     }
     override fun latestUpdatesNextPageSelector(): String = popularMangaNextPageSelector()
-    override fun latestUpdatesSelector(): String = "div.latest_releases_item"
+    override fun latestUpdatesSelector(): String = "div.latest_item, div.latest_releases_item"
     override fun latestUpdatesFromElement(element: Element): SManga = SManga.create().apply {
-        thumbnail_url = element.select("img").attr("abs:src").replace("mini", "manga").substringBeforeLast("/") + ".jpg"
-        element.select("a").apply {
-            title = first()!!.text()
-            url = attr("href")
+        // Fix thumbnail URL: replace "mini_images" with "manga_images" and remove dimensions (e.g. /175x245)
+        thumbnail_url = element.selectFirst("img")?.attr("abs:src")?.let {
+            val url = it.toHttpUrlOrNull()
+            if (url != null && url.pathSegments.firstOrNull() == "mini_images" && url.pathSegments.size >= 2) {
+                val slug = url.pathSegments[1]
+                url.newBuilder()
+                    .encodedPath("/")
+                    .addPathSegment("manga_images")
+                    .addPathSegment("$slug.jpg")
+                    .build()
+                    .toString()
+            } else {
+                it
+            }
+        }
+
+        if (element.hasClass("latest_item")) {
+            // Home page structure
+            element.select("a.name").apply {
+                title = text()
+                url = attr("href")
+            }
+        } else {
+            // Latest_Releases page structure
+            element.select("a").apply {
+                title = first()!!.text()
+                url = attr("href")
+            }
         }
     }
 
@@ -91,8 +121,11 @@ class Mangafreak : ParsedHttpSource() {
                     }
                     url.addPathSegments("Genre/$genres")
                 }
+
                 is StatusFilter -> url.addPathSegments("Status/${filter.toUriPart()}")
+
                 is TypeFilter -> url.addPathSegments("Type/${filter.toUriPart()}")
+
                 else -> {}
             }
         }
@@ -153,12 +186,8 @@ class Mangafreak : ParsedHttpSource() {
         setUrlWithoutDomain(element.select("a").attr("href"))
         date_upload = parseDate(element.select("td:eq(1)").text())
     }
-    private fun parseDate(date: String): Long {
-        return SimpleDateFormat("yyyy/MM/dd", Locale.US).parse(date)?.time ?: 0L
-    }
-    override fun chapterListParse(response: Response): List<SChapter> {
-        return super.chapterListParse(response).reversed()
-    }
+    private fun parseDate(date: String): Long = SimpleDateFormat("yyyy/MM/dd", Locale.US).parse(date)?.time ?: 0L
+    override fun chapterListParse(response: Response): List<SChapter> = super.chapterListParse(response).reversed()
 
     // Pages
 
@@ -168,9 +197,7 @@ class Mangafreak : ParsedHttpSource() {
         }
     }
 
-    override fun imageUrlParse(document: Document): String {
-        throw UnsupportedOperationException()
-    }
+    override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException()
 
     // Filter
 
@@ -225,26 +252,27 @@ class Mangafreak : ParsedHttpSource() {
         Genre("Yuri"),
     )
 
-    private class TypeFilter : UriPartFilter(
-        "Manga Type",
-        arrayOf(
-            Pair("Both", "0"),
-            Pair("Manga", "2"),
-            Pair("Manhwa", "1"),
-        ),
-    )
+    private class TypeFilter :
+        UriPartFilter(
+            "Manga Type",
+            arrayOf(
+                Pair("Both", "0"),
+                Pair("Manga", "2"),
+                Pair("Manhwa", "1"),
+            ),
+        )
 
-    private class StatusFilter : UriPartFilter(
-        "Manga Status",
-        arrayOf(
-            Pair("Both", "0"),
-            Pair("Completed", "1"),
-            Pair("Ongoing", "2"),
-        ),
-    )
+    private class StatusFilter :
+        UriPartFilter(
+            "Manga Status",
+            arrayOf(
+                Pair("Both", "0"),
+                Pair("Completed", "1"),
+                Pair("Ongoing", "2"),
+            ),
+        )
 
-    private open class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+    private open class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals[state].second
     }
 }

@@ -15,13 +15,14 @@ import org.jsoup.nodes.Document
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class NetTruyenCO : WPComics(
-    "NetTruyenCO (unoriginal)",
-    "https://nettruyenrr.com",
-    "vi",
-    dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US),
-    gmtOffset = null,
-) {
+class NetTruyenCO :
+    WPComics(
+        "NetTruyenCO (unoriginal)",
+        "https://nettruyenar.com",
+        "vi",
+        dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US),
+        gmtOffset = null,
+    ) {
     override val popularPath = "truyen-tranh-hot"
 
     // Override chapters
@@ -45,13 +46,13 @@ class NetTruyenCO : WPComics(
     // Build and return the request to fetch all chapters in JSON form
     override fun chapterListRequest(manga: SManga): Request {
         val slugAndId = manga.url.substringAfterLast("/") // e.g. "slug-12345"
-        val comicId = slugAndId.substringAfterLast("-").toInt() // 12345
+        val comicId = slugAndId.substringAfterLast("-") // 12345
         val slug = slugAndId.substringBeforeLast("-") // "slug"
         val url = baseUrl.toHttpUrl()
             .newBuilder()
             .addPathSegments("Comic/Services/ComicService.asmx/ChapterList")
             .addQueryParameter("slug", slug)
-            .addQueryParameter("comicId", comicId.toString())
+            .addQueryParameter("comicId", comicId)
             .build()
         return GET(url, headers)
     }
@@ -74,17 +75,15 @@ class NetTruyenCO : WPComics(
     override fun chapterListSelector(): String = throw UnsupportedOperationException()
 
     // Details
-    override fun mangaDetailsParse(document: Document): SManga {
-        return SManga.create().apply {
-            document.select("article#item-detail").let { info ->
-                author = info.select("li.author p.col-xs-8").text()
-                status = info.select("li.status p.col-xs-8").text().toStatus()
-                genre = info.select("li.kind p.col-xs-8 a").joinToString { it.text() }
-                val otherName = info.select("h2.other-name").text()
-                description = info.select("div.detail-content div.shortened").text() +
-                    if (otherName.isNotBlank()) "\n\n ${intl["OTHER_NAME"]}: $otherName" else ""
-                thumbnail_url = imageOrNull(info.select("div.col-image img").first()!!)
-            }
+    override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
+        document.select("article#item-detail").let { info ->
+            author = info.select("li.author p.col-xs-8").text()
+            status = info.select("li.status p.col-xs-8").text().toStatus()
+            genre = info.select("li.kind p.col-xs-8 a").joinToString { it.text() }
+            val otherName = info.select("h2.other-name").text()
+            description = info.select("div.detail-content div.shortened").flatMap { it.children() }.joinToString("\n\n") { it.wholeText().trim() } +
+                if (otherName.isNotBlank()) "\n\n ${intl["OTHER_NAME"]}: $otherName" else ""
+            thumbnail_url = imageOrNull(info.select("div.col-image img").first()!!)
         }
     }
 }

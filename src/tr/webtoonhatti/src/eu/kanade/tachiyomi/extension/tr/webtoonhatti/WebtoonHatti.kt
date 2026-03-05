@@ -4,12 +4,13 @@ import eu.kanade.tachiyomi.multisrc.madara.Madara
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class WebtoonHatti : Madara(
-    "Webtoon Hatti",
-    "https://webtoonhatti.me",
-    "tr",
-    dateFormat = SimpleDateFormat("dd MMMM", Locale("tr")),
-) {
+class WebtoonHatti :
+    Madara(
+        "Webtoon Hatti",
+        "https://webtoonhatti.club",
+        "tr",
+        dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ROOT),
+    ) {
     override val useNewChapterEndpoint = false
 
     override val mangaSubString = "webtoon"

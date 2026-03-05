@@ -51,39 +51,29 @@ class FlameComics : HttpSource() {
         addPathSegment(buildId)
     }
 
-    private fun imageApiUrlBuilder(dataUrl: String) = baseUrl.toHttpUrl().newBuilder().apply {
-        addPathSegment("_next")
-        addPathSegment("image")
-    }.build().toString() + "?url=$dataUrl"
+    private fun imageApiUrlBuilder() = "$cdn/uploads/images/series".toHttpUrl().newBuilder()
 
-    private fun thumbnailUrl(seriesData: Series) = imageApiUrlBuilder(
-        cdn.toHttpUrl().newBuilder().apply {
-            addPathSegment("series")
-            addPathSegment(seriesData.series_id.toString())
-            addPathSegment(seriesData.cover)
-            addQueryParameter(seriesData.last_edit, null)
-            addQueryParameter("w", "384")
-            addQueryParameter("q", "75")
-        }.build().toString(),
+    private fun thumbnailUrl(seriesData: Series) = imageApiUrlBuilder().apply {
+        addPathSegment(seriesData.series_id.toString())
+        addPathSegment(seriesData.cover)
+        addQueryParameter(seriesData.last_edit.toString(), null)
+    }.build().toString()
+
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = GET(
+        dataApiReqBuilder().apply {
+            addPathSegment("browse.json")
+            fragment("$page&${removeSpecialCharsRegex.replace(query.lowercase(), "")}")
+        }.build(),
+        headers,
     )
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request =
-        GET(
-            dataApiReqBuilder().apply {
-                addPathSegment("browse.json")
-                fragment("$page&${removeSpecialCharsRegex.replace(query.lowercase(), "")}")
-            }.build(),
-            headers,
-        )
-
-    override fun popularMangaRequest(page: Int): Request =
-        GET(
-            dataApiReqBuilder().apply {
-                addPathSegment("browse.json")
-                fragment("$page")
-            }.build(),
-            headers,
-        )
+    override fun popularMangaRequest(page: Int): Request = GET(
+        dataApiReqBuilder().apply {
+            addPathSegment("browse.json")
+            fragment("$page")
+        }.build(),
+        headers,
+    )
 
     override fun latestUpdatesRequest(page: Int): Request = GET(
         dataApiReqBuilder().apply {
@@ -92,25 +82,24 @@ class FlameComics : HttpSource() {
         headers,
     )
 
-    override fun searchMangaParse(response: Response): MangasPage =
-        mangaParse(response) { seriesList ->
-            val query = response.request.url.fragment!!.split("&")[1]
-            seriesList.filter { series ->
-                val titles = mutableListOf(series.title)
-                if (series.altTitles != null) {
-                    titles += json.decodeFromString<List<String>>(series.altTitles)
-                }
-                titles.any { title ->
-                    removeSpecialCharsRegex.replace(
-                        query.lowercase(),
-                        "",
-                    ) in removeSpecialCharsRegex.replace(
-                        title.lowercase(),
-                        "",
-                    )
-                }
+    override fun searchMangaParse(response: Response): MangasPage = mangaParse(response) { seriesList ->
+        val query = response.request.url.fragment!!.split("&")[1]
+        seriesList.filter { series ->
+            val titles = mutableListOf(series.title)
+            if (series.altTitles != null) {
+                titles += series.altTitles
+            }
+            titles.any { title ->
+                removeSpecialCharsRegex.replace(
+                    query.lowercase(),
+                    "",
+                ) in removeSpecialCharsRegex.replace(
+                    title.lowercase(),
+                    "",
+                )
             }
         }
+    }
 
     override fun latestUpdatesParse(response: Response): MangasPage {
         val latestData = json.decodeFromString<LatestPageData>(response.body.string())
@@ -131,8 +120,7 @@ class FlameComics : HttpSource() {
         )
     }
 
-    override fun popularMangaParse(response: Response): MangasPage =
-        mangaParse(response) { list -> list.sortedByDescending { it.views } }
+    override fun popularMangaParse(response: Response): MangasPage = mangaParse(response) { list -> list.sortedByDescending { it.views } }
 
     private fun mangaParse(
         response: Response,
@@ -140,6 +128,7 @@ class FlameComics : HttpSource() {
     ): MangasPage {
         val searchedSeriesData =
             json.decodeFromString<SearchPageData>(response.body.string()).pageProps.series
+                .filter { series -> series.series_id != null }
 
         val page = if (!response.request.url.fragment?.contains("&")!!) {
             response.request.url.fragment!!.toInt()
@@ -183,10 +172,11 @@ class FlameComics : HttpSource() {
 
     override fun mangaDetailsParse(response: Response): SManga = SManga.create().apply {
         val seriesData =
-            json.decodeFromString<MangaPageData>(response.body.string()).pageProps.series
+            json.decodeFromString<MangaDetailsResponseData>(response.body.string()).pageProps.series
         title = seriesData.title
         thumbnail_url = thumbnailUrl(seriesData)
-        description = Jsoup.parseBodyFragment(seriesData.description).wholeText()
+        description = seriesData.description
+            ?.let { Jsoup.parseBodyFragment(it).wholeText() }
 
         genre = seriesData.tags?.let { tags ->
             (listOf(seriesData.type) + tags).joinToString()
@@ -204,8 +194,9 @@ class FlameComics : HttpSource() {
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
-        val mangaPageData = json.decodeFromString<MangaPageData>(response.body.string())
-        return mangaPageData.pageProps.chapters.map { chapter ->
+        val chaptersListResponseData =
+            json.decodeFromString<ChapterListResponseData>(response.body.string())
+        return chaptersListResponseData.pageProps.chapters.map { chapter ->
             SChapter.create().apply {
                 setUrlWithoutDomain(
                     baseUrl.toHttpUrl().newBuilder().apply {
@@ -247,20 +238,15 @@ class FlameComics : HttpSource() {
         return chapter.images.mapIndexed { idx, page ->
             Page(
                 idx,
-                imageUrl = imageApiUrlBuilder(
-                    cdn.toHttpUrl().newBuilder().apply {
-                        addPathSegment("series")
-                        addPathSegment(chapter.series_id.toString())
-                        addPathSegment(chapter.token)
-                        addPathSegment(page.name)
-                        addQueryParameter(
-                            chapter.release_date.toString(),
-                            value = null,
-                        )
-                        addQueryParameter("w", "1920")
-                        addQueryParameter("q", "100")
-                    }.build().toString(),
-                ),
+                imageUrl = imageApiUrlBuilder().apply {
+                    addPathSegment(chapter.series_id.toString())
+                    addPathSegment(chapter.token)
+                    addPathSegment(page.name)
+                    addQueryParameter(
+                        chapter.release_date.toString(),
+                        value = null,
+                    )
+                }.build().toString(),
             )
         }
     }

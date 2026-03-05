@@ -1,8 +1,8 @@
 package eu.kanade.tachiyomi.extension.vi.truyenhentai18
 
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.model.FilterList
-import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
@@ -11,140 +11,159 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import rx.Observable
 import java.util.Calendar
 
 class TruyenHentai18 : ParsedHttpSource() {
 
     override val name = "Truyện Hentai 18+"
 
-    override val baseUrl = "https://truyenhentai18.pro"
+    override val baseUrl = "https://truyenhentai18.net"
 
     override val lang = "vi"
 
     override val supportsLatest = true
 
-    override val client = network.cloudflareClient
+    override val client = network.cloudflareClient.newBuilder()
+        .rateLimit(3)
+        .build()
 
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    override fun popularMangaRequest(page: Int) =
-        GET("$baseUrl/truyen-de-xuat" + if (page > 1) "/page/$page" else "", headers)
+    // ============================== Popular ======================================
 
-    override fun popularMangaSelector() = "div.row > div[class^=item-] > div.card"
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/xem-nhieu-nhat" + if (page > 1) "/page/$page" else "", headers)
 
-    override fun popularMangaFromElement(element: Element) = SManga.create().apply {
-        element.selectFirst("a.item-title")!!.let {
-            setUrlWithoutDomain(it.attr("href"))
-            title = it.text()
-        }
-
-        thumbnail_url = element.selectFirst("a.item-cover img")?.absUrl("data-src")
-    }
-
-    override fun popularMangaNextPageSelector() = "ul.pagination li.page-item.active:not(:last-child)"
-
-    override fun latestUpdatesRequest(page: Int) =
-        GET("$baseUrl/truyen-moi" + if (page > 1) "/page/$page" else "", headers)
-
-    override fun latestUpdatesSelector() = popularMangaSelector()
-
-    override fun latestUpdatesFromElement(element: Element) = popularMangaFromElement(element)
-
-    override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
-
-    override fun fetchSearchManga(
-        page: Int,
-        query: String,
-        filters: FilterList,
-    ): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_SLUG_SEARCH)) {
-            val slug = query.removePrefix(PREFIX_SLUG_SEARCH)
-            val url = "/$slug"
-
-            fetchMangaDetails(SManga.create().apply { this.url = url })
-                .map { MangasPage(listOf(it.apply { this.url = url }), false) }
-        } else {
-            super.fetchSearchManga(page, query, filters)
+    override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {
+        setUrlWithoutDomain(element.selectFirst("a")!!.absUrl("href"))
+        title = element.selectFirst("h2")!!.text()
+        thumbnail_url = element.selectFirst("img")?.let { element ->
+            imageElement(element)
         }
     }
+
+    override fun popularMangaNextPageSelector(): String = "ul.pagination li a:contains(»)"
+
+    override fun popularMangaSelector(): String = "div.col-6.col-md-4.col-lg-2.mb-3"
+
+    // ============================== Latest ======================================
+
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/moi-cap-nhat" + if (page > 1) "/page/$page" else "", headers)
+
+    override fun latestUpdatesSelector(): String = popularMangaSelector()
+
+    override fun latestUpdatesNextPageSelector(): String = popularMangaNextPageSelector()
+
+    override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
+
+    // ============================== Search ======================================
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = baseUrl.toHttpUrl().newBuilder().apply {
-            if (page > 1) {
-                addPathSegment("page")
-                addPathSegment(page.toString())
-            }
-
-            addQueryParameter("s", query)
-        }.build()
-
-        return GET(url, headers)
-    }
-
-    override fun searchMangaSelector() = "div[data-id] > div.card"
-
-    override fun searchMangaFromElement(element: Element) = popularMangaFromElement(element)
-
-    override fun searchMangaNextPageSelector() = popularMangaNextPageSelector()
-
-    override fun mangaDetailsParse(document: Document) = SManga.create().apply {
-        val statusClassName = document.selectFirst("em.eflag.item-flag")!!.className()
-
-        title = document.selectFirst("span[itemprop=name]")!!.text()
-        author = document.select("div.attr-item b:contains(Tác giả) ~ span a, span[itemprop=author]").joinToString { it.text() }
-        description = document.selectFirst("div[itemprop=about]")?.text()
-        genre = document.select("ul.post-categories li a").joinToString { it.text() }
-        thumbnail_url = document.selectFirst("div.attr-cover img")?.absUrl("src")
-        status = when {
-            statusClassName.contains("flag-completed") -> SManga.COMPLETED
-            statusClassName.contains("flag-ongoing") -> SManga.ONGOING
-            else -> SManga.UNKNOWN
+        val genreFilter = filters.filterIsInstance<GenreFilter>().firstOrNull()
+        val selectedGenre = genreFilter?.toUriPart()
+        return if (query.isBlank() && !selectedGenre.isNullOrEmpty()) {
+            GET("$baseUrl/category/$selectedGenre" + if (page > 1) "/page/$page" else "", headers)
+        } else {
+            val url = baseUrl.toHttpUrl().newBuilder()
+                .addQueryParameter("s", query)
+                .build()
+            GET(url, headers)
         }
     }
 
-    override fun chapterListSelector() = "#chaptersbox > div"
+    override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    override fun chapterFromElement(element: Element) = SChapter.create().apply {
-        element.selectFirst("a")!!.let {
-            setUrlWithoutDomain(it.attr("href"))
-            name = it.selectFirst("b")!!.text()
-        }
+    override fun searchMangaNextPageSelector(): String = popularMangaNextPageSelector()
 
-        date_upload = element.selectFirst("div.extra > i.ps-3")
-            ?.text()
-            ?.let { parseRelativeDate(it) }
-            ?: 0L
-    }
+    override fun searchMangaSelector(): String = popularMangaSelector()
 
-    override fun pageListParse(document: Document) =
-        document.select("#viewer img").mapIndexed { i, it ->
-            Page(i, imageUrl = it.absUrl("src"))
-        }
+    // ============================== Filters ======================================
 
-    override fun imageUrlParse(document: Document) = throw UnsupportedOperationException()
+    override fun getFilterList(): FilterList = getFilters()
 
-    private fun parseRelativeDate(date: String): Long {
-        val (valueString, unit) = date.substringBefore(" trước").split(" ")
-        val value = valueString.toInt()
+    // ============================== Details ======================================
 
-        val calendar = Calendar.getInstance().apply {
-            when (unit) {
-                "giây" -> add(Calendar.SECOND, -value)
-                "phút" -> add(Calendar.MINUTE, -value)
-                "giờ" -> add(Calendar.HOUR_OF_DAY, -value)
-                "ngày" -> add(Calendar.DAY_OF_MONTH, -value)
-                "tuần" -> add(Calendar.WEEK_OF_MONTH, -value)
-                "tháng" -> add(Calendar.MONTH, -value)
-                "năm" -> add(Calendar.YEAR, -value)
+    override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
+        title = document.selectFirst("h1")!!.text()
+        thumbnail_url = document.selectFirst("img.manga-cover")?.absUrl("src")
+            ?: document.selectFirst(".card img.img-fluid")?.absUrl("src")
+
+        genre = document.select("a.badge.bg-primary").joinToString { it.text() }
+
+        document.select(".list-group-item, div").forEach { element ->
+            val text = element.text()
+            when {
+                text.contains("Trạng thái:", ignoreCase = true) -> {
+                    status = when {
+                        text.contains("Hoàn thành", ignoreCase = true) -> SManga.COMPLETED
+                        text.contains("Đang tiến hành", ignoreCase = true) -> SManga.ONGOING
+                        else -> SManga.UNKNOWN
+                    }
+                }
+
+                text.contains("Tác giả:", ignoreCase = true) -> {
+                    author = text.substringAfter(":").trim()
+                }
             }
         }
 
-        return calendar.timeInMillis
+        description = document.select(".description").joinToString("\n") { it.wholeText().trim() }
     }
 
-    companion object {
-        internal const val PREFIX_SLUG_SEARCH = "slug:"
+    // ============================== Chapters ======================================
+
+    override fun chapterListSelector(): String = "div.chapter-item"
+
+    override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
+        setUrlWithoutDomain(element.selectFirst("a.fw-bold")!!.absUrl("href"))
+        name = element.selectFirst("a.fw-bold")!!.text()
+        val dateText = element.selectFirst("div.chapter-date")?.text()
+        date_upload = dateText.toDate()
     }
+
+    private fun String?.toDate(): Long {
+        this ?: return 0L
+
+        if (!this.contains("trước", ignoreCase = true)) {
+            return 0L
+        }
+
+        return try {
+            val calendar = Calendar.getInstance()
+
+            val patterns = listOf(
+                Regex("""(\d+)\s*giờ""", RegexOption.IGNORE_CASE) to Calendar.HOUR_OF_DAY,
+                Regex("""(\d+)\s*ngày""", RegexOption.IGNORE_CASE) to Calendar.DAY_OF_MONTH,
+                Regex("""(\d+)\s*tuần""", RegexOption.IGNORE_CASE) to Calendar.WEEK_OF_YEAR,
+                Regex("""(\d+)\s*tháng""", RegexOption.IGNORE_CASE) to Calendar.MONTH,
+                Regex("""(\d+)\s*năm""", RegexOption.IGNORE_CASE) to Calendar.YEAR,
+                Regex("""(\d+)\s*phút""", RegexOption.IGNORE_CASE) to Calendar.MINUTE,
+                Regex("""(\d+)\s*giây""", RegexOption.IGNORE_CASE) to Calendar.SECOND,
+            )
+
+            for ((pattern, field) in patterns) {
+                pattern.find(this)?.groupValues?.get(1)?.toIntOrNull()?.let { number ->
+                    calendar.add(field, -number)
+                    return calendar.timeInMillis
+                }
+            }
+
+            0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    // ============================== Pages ======================================
+
+    override fun pageListParse(document: Document): List<Page> = document.select("div#viewer.chapter-container img").mapIndexed { index, element ->
+        Page(index, imageUrl = imageElement(element))
+    }
+
+    private fun imageElement(element: Element): String? = when {
+        element.hasAttr("data-src") -> element.attr("abs:data-src")
+        else -> element.attr("abs:src")
+    }
+
+    override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException()
 }

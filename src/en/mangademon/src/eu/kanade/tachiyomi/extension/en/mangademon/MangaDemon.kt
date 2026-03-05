@@ -10,6 +10,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
@@ -30,15 +31,27 @@ class MangaDemon : ParsedHttpSource() {
     override val baseUrl = "https://demonicscans.org"
 
     override val client = network.cloudflareClient.newBuilder()
-        .rateLimit(1)
+        .addInterceptor(::thumbnailInterceptor)
+        .rateLimit(2)
         .build()
+
+    private val thumbnailClient = network.cloudflareClient.newBuilder()
+        .rateLimit(6)
+        .build()
+
+    private fun thumbnailInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        return if (request.url.toString().contains("images/thumbnails")) {
+            thumbnailClient.newCall(request).execute()
+        } else {
+            chain.proceed(request)
+        }
+    }
 
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/advanced.php?list=$page&status=all&orderby=VIEWS%20DESC", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/advanced.php?list=$page&status=all&orderby=VIEWS%20DESC", headers)
 
     override fun popularMangaNextPageSelector() = "div.pagination > ul > a > li:contains(Next)"
 
@@ -50,13 +63,11 @@ class MangaDemon : ParsedHttpSource() {
         thumbnail_url = element.selectFirst("img")?.attr("abs:src")
     }
 
-    override fun latestUpdatesRequest(page: Int): Request {
-        return GET("$baseUrl/lastupdates.php?list=$page", headers)
-    }
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/lastupdates.php?list=$page", headers)
 
     override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
 
-    override fun latestUpdatesSelector() = "div#updates-container > div.updates-element"
+    override fun latestUpdatesSelector() = "div#updates-container > div.updates-element:not(:has(.toffee-badge))"
 
     override fun latestUpdatesFromElement(element: Element) = SManga.create().apply {
         with(element.selectFirst("div.updates-element-info")!!) {
@@ -66,14 +77,12 @@ class MangaDemon : ParsedHttpSource() {
         thumbnail_url = element.selectFirst("div.thumb img")!!.attr("abs:src")
     }
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.isNotEmpty()) {
-            super.fetchSearchManga(page, query, filters)
-        } else {
-            client.newCall(filterSearchRequest(page, filters))
-                .asObservableSuccess()
-                .map(::filterSearchParse)
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.isNotEmpty()) {
+        super.fetchSearchManga(page, query, filters)
+    } else {
+        client.newCall(filterSearchRequest(page, filters))
+            .asObservableSuccess()
+            .map(::filterSearchParse)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -103,12 +112,15 @@ class MangaDemon : ParsedHttpSource() {
                             addQueryParameter("genre[]", genre)
                         }
                     }
+
                     is StatusFilter -> {
                         addQueryParameter("status", filter.selected)
                     }
+
                     is SortFilter -> {
                         addQueryParameter("orderby", filter.selected)
                     }
+
                     else -> {}
                 }
             }
@@ -147,18 +159,14 @@ class MangaDemon : ParsedHttpSource() {
         date_upload = parseDate(element.selectFirst("span")?.ownText())
     }
 
-    private fun parseDate(dateStr: String?): Long {
-        return try {
-            dateStr?.let { DATE_FORMATTER.parse(it)?.time } ?: 0
-        } catch (_: ParseException) {
-            0L
-        }
+    private fun parseDate(dateStr: String?): Long = try {
+        dateStr?.let { DATE_FORMATTER.parse(it)?.time } ?: 0
+    } catch (_: ParseException) {
+        0L
     }
 
-    override fun pageListParse(document: Document): List<Page> {
-        return document.select("div > img.imgholder").mapIndexed { i, element ->
-            Page(i, "", element.attr("abs:src"))
-        }
+    override fun pageListParse(document: Document): List<Page> = document.select("div > img.imgholder").mapIndexed { i, element ->
+        Page(i, "", element.attr("abs:src"))
     }
 
     private fun Element.encodedAttr(attribute: String) = URLEncoder.encode(attr(attribute), "UTF-8")

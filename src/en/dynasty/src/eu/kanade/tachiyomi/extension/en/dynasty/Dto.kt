@@ -61,19 +61,16 @@ class MangaEntry(
         thumbnail_url = cover
     }
 
-    override fun equals(other: Any?): Boolean {
-        return this.url == (other as MangaEntry?)?.url
-    }
+    override fun equals(other: Any?): Boolean = this.url == (other as MangaEntry?)?.url
 
-    override fun hashCode(): Int {
-        return this.url.hashCode()
-    }
+    override fun hashCode(): Int = this.url.hashCode()
 }
 
 @Serializable
 class MangaResponse(
     val name: String,
     val type: String,
+    val permalink: String,
     val tags: List<BrowseTag>,
     val cover: String?,
     val description: String?,
@@ -81,7 +78,15 @@ class MangaResponse(
     @Serializable(with = ChapterItemListSerializer::class)
     val taggings: List<ChapterItem>,
     @SerialName("total_pages") val totalPages: Int = 0,
-)
+) {
+    val directory get() = when (type) {
+        SERIES_TYPE -> SERIES_DIR
+        ANTHOLOGY_TYPE -> ANTHOLOGIES_DIR
+        DOUJIN_TYPE -> DOUJINS_DIR
+        ISSUE_TYPE -> ISSUES_DIR
+        else -> throw Exception("Unsupported Type for directory: $type")
+    }
+}
 
 @Serializable
 sealed class ChapterItem
@@ -102,26 +107,26 @@ class MangaChapter(
 ) : ChapterItem()
 
 object ChapterItemListSerializer : JsonTransformingSerializer<List<ChapterItem>>(ListSerializer(ChapterItem.serializer())) {
-    override fun transformDeserialize(element: JsonElement): JsonElement {
-        return JsonArray(
-            element.jsonArray.map { jsonElement ->
-                val jsonObject = jsonElement.jsonObject
-                when {
-                    "header" in jsonObject -> JsonObject(
-                        jsonObject + ("type" to JsonPrimitive("header")),
-                    )
-                    else -> JsonObject(
-                        jsonObject + ("type" to JsonPrimitive("chapter")),
-                    )
-                }
-            },
-        )
-    }
+    override fun transformDeserialize(element: JsonElement): JsonElement = JsonArray(
+        element.jsonArray.map { jsonElement ->
+            val jsonObject = jsonElement.jsonObject
+            when {
+                "header" in jsonObject -> JsonObject(
+                    jsonObject + ("type" to JsonPrimitive("header")),
+                )
+
+                else -> JsonObject(
+                    jsonObject + ("type" to JsonPrimitive("chapter")),
+                )
+            }
+        },
+    )
 }
 
 @Serializable
 class ChapterResponse(
     val title: String,
+    val permalink: String,
     val tags: List<BrowseTag>,
     val pages: List<Page>,
     @SerialName("released_on") val releasedOn: String,

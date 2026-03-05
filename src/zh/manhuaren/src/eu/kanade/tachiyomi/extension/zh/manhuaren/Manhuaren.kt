@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import android.os.Build
 import android.text.format.DateFormat
 import android.util.Base64
+import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -44,7 +45,9 @@ import javax.crypto.Cipher
 import kotlin.random.Random
 import kotlin.random.nextUBytes
 
-class Manhuaren : HttpSource(), ConfigurableSource {
+class Manhuaren :
+    HttpSource(),
+    ConfigurableSource {
     override val lang = "zh"
     override val supportsLatest = true
     override val name = "漫画人"
@@ -57,9 +60,12 @@ class Manhuaren : HttpSource(), ConfigurableSource {
     private val gsnSalt = "4e0a48e1c0b54041bce9c8f0e036124d"
     private val encodedPublicKey = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmFCg289dTws27v8GtqIffkP4zgFR+MYIuUIeVO5AGiBV0rfpRh5gg7i8RrT12E9j6XwKoe3xJz1khDnPc65P5f7CJcNJ9A8bj7Al5K4jYGxz+4Q+n0YzSllXPit/Vz/iW5jFdlP6CTIgUVwvIoGEL2sS4cqqqSpCDKHSeiXh9CtMsktc6YyrSN+8mQbBvoSSew18r/vC07iQiaYkClcs7jIPq9tuilL//2uR9kWn5jsp8zHKVjmXuLtHDhM9lObZGCVJwdlN2KDKTh276u/pzQ1s5u8z/ARtK26N8e5w8mNlGcHcHfwyhjfEQurvrnkqYH37+12U3jGk5YNHGyOPcwIDAQAB"
     private val imei: String by lazy { generateIMEI() }
-    private val token: String by lazy { fetchToken() }
-    private var userId: String = preferences.getString(USER_ID_PREF, null) ?: "-1"
     private val lastUsedTime: String by lazy { generateLastUsedTime() }
+
+    companion object {
+        const val USER_ID_PREF = "userId"
+        const val TOKEN_PREF = "token"
+    }
 
     override val client: OkHttpClient = network.cloudflareClient
         .newBuilder()
@@ -67,15 +73,11 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         .addInterceptor(ErrorResponseInterceptor(baseUrl, preferences))
         .build()
 
-    private fun randomString(length: Int, pool: String): String {
-        return (1..length)
-            .map { Random.nextInt(0, pool.length).let { pool[it] } }
-            .joinToString("")
-    }
+    private fun randomString(length: Int, pool: String): String = (1..length)
+        .map { Random.nextInt(0, pool.length).let { pool[it] } }
+        .joinToString("")
 
-    private fun randomNumber(length: Int): String {
-        return randomString(length, "0123456789")
-    }
+    private fun randomNumber(length: Int): String = randomString(length, "0123456789")
 
     private fun addLuhnCheckDigit(str: String): String {
         var sum = 0
@@ -100,9 +102,7 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         return "$str$checkDigit"
     }
 
-    private fun generateIMEI(): String {
-        return addLuhnCheckDigit(randomNumber(14))
-    }
+    private fun generateIMEI(): String = addLuhnCheckDigit(randomNumber(14))
 
     // private fun generateSimSerialNumber(): String {
     //     return addLuhnCheckDigit("891253${randomNumber(12)}")
@@ -129,8 +129,9 @@ class Manhuaren : HttpSource(), ConfigurableSource {
     )
 
     private fun fetchToken(): String {
-        var token = preferences.getString(TOKEN_PREF, null)
-        if (token == null || userId == "-1") {
+        var token = preferences.getString(TOKEN_PREF, "")!!
+        var userId = preferences.getString(USER_ID_PREF, "")!!
+        if (token.isEmpty() || userId.isEmpty()) {
             val res = client.newCall(getAnonyUser()).execute()
             val tokenResponse = Json.decodeFromString<GetAnonyUserBody>(res.body.string()).response
             val tokenResult = tokenResponse.tokenResult
@@ -147,9 +148,7 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         return token
     }
 
-    private fun generateLastUsedTime(): String {
-        return ((Date().time / 1000) * 1000).toString()
-    }
+    private fun generateLastUsedTime(): String = ((Date().time / 1000) * 1000).toString()
 
     private fun encrypt(message: String): String {
         val x509EncodedKeySpec = X509EncodedKeySpec(Base64.decode(encodedPublicKey, Base64.DEFAULT))
@@ -249,6 +248,7 @@ class Manhuaren : HttpSource(), ConfigurableSource {
 
     private fun myRequest(url: HttpUrl, method: String, body: RequestBody?): Request {
         val now = DateFormat.format("yyyy-MM-dd+HH:mm:ss", Date()).toString()
+        val userId = preferences.getString(USER_ID_PREF, "-1")!!
         val newUrl = url.newBuilder()
             .setQueryParameter("gsm", "md5")
             .setQueryParameter("gft", "json")
@@ -295,14 +295,12 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         )
     }
 
-    private fun myPost(url: HttpUrl, body: RequestBody?): Request {
-        return myRequest(url, "POST", body).newBuilder()
-            .cacheControl(CacheControl.Builder().noCache().noStore().build())
-            .build()
-    }
+    private fun myPost(url: HttpUrl, body: RequestBody?): Request = myRequest(url, "POST", body).newBuilder()
+        .cacheControl(CacheControl.Builder().noCache().noStore().build())
+        .build()
 
     private fun myGet(url: HttpUrl): Request {
-        val authorization = token
+        val authorization = fetchToken()
         return myRequest(url, "GET", null).newBuilder()
             .addHeader("Authorization", authorization)
             .cacheControl(CacheControl.Builder().maxAge(10, MINUTES).build())
@@ -348,6 +346,7 @@ class Manhuaren : HttpSource(), ConfigurableSource {
             put("ac", "") // area code
         }
 
+        val userId = preferences.getString(USER_ID_PREF, "-1")!!
         return Headers.Builder().apply {
             add("X-Yq-Yqci", JSONObject(yqciMap).toString())
             add("X-Yq-Key", userId)
@@ -374,12 +373,10 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         return result.toString()
     }
 
-    private fun urlEncode(str: String?): String {
-        return URLEncoder.encode(str ?: "", "UTF-8")
-            .replace("+", "%20")
-            .replace("%7E", "~")
-            .replace("*", "%2A")
-    }
+    private fun urlEncode(str: String?): String = URLEncoder.encode(str ?: "", "UTF-8")
+        .replace("+", "%20")
+        .replace("%7E", "~")
+        .replace("*", "%2A")
 
     private fun mangasFromJSONArray(arr: JSONArray): MangasPage {
         val ret = ArrayList<SManga>(arr.length())
@@ -433,13 +430,9 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         return myGet(url)
     }
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        return mangasPageParse(response)
-    }
+    override fun popularMangaParse(response: Response): MangasPage = mangasPageParse(response)
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        return mangasPageParse(response)
-    }
+    override fun latestUpdatesParse(response: Response): MangasPage = mangasPageParse(response)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         var url = baseHttpUrl.newBuilder()
@@ -454,10 +447,12 @@ class Manhuaren : HttpSource(), ConfigurableSource {
                     is SortFilter -> {
                         url = url.setQueryParameter("sort", filter.getId())
                     }
+
                     is CategoryFilter -> {
                         url = url.setQueryParameter("subCategoryId", filter.getId())
                             .setQueryParameter("subCategoryType", filter.getType())
                     }
+
                     else -> {}
                 }
             }
@@ -482,16 +477,22 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         title = obj.getString("mangaName")
         thumbnail_url = ""
         obj.optString("mangaCoverimageUrl").let {
-            if (it != "") { thumbnail_url = it }
+            if (it != "") {
+                thumbnail_url = it
+            }
         }
         if (thumbnail_url == "" || thumbnail_url == "http://mhfm5.tel.cdndm5.com/tag/category/nopic.jpg") {
             obj.optString("mangaPicimageUrl").let {
-                if (it != "") { thumbnail_url = it }
+                if (it != "") {
+                    thumbnail_url = it
+                }
             }
         }
         if (thumbnail_url == "") {
             obj.optString("shareIcon").let {
-                if (it != "") { thumbnail_url = it }
+                if (it != "") {
+                    thumbnail_url = it
+                }
             }
         }
 
@@ -513,15 +514,11 @@ class Manhuaren : HttpSource(), ConfigurableSource {
         description = obj.getString("mangaIntro")
     }
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return myGet((baseUrl + manga.url).toHttpUrl())
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = myGet((baseUrl + manga.url).toHttpUrl())
 
     override fun chapterListRequest(manga: SManga) = mangaDetailsRequest(manga)
 
-    private fun getChapterName(type: String, name: String, title: String): String {
-        return (if (type == "mangaEpisode") "[番外] " else "") + name + (if (title == "") "" else ": $title")
-    }
+    private fun getChapterName(type: String, name: String, title: String): String = (if (type == "mangaEpisode") "[番外] " else "") + name + (if (title == "") "" else ": $title")
 
     private fun chaptersFromJSONArray(type: String, arr: JSONArray): List<SChapter> {
         val ret = ArrayList<SChapter>()
@@ -530,7 +527,11 @@ class Manhuaren : HttpSource(), ConfigurableSource {
             ret.add(
                 SChapter.create().apply {
                     val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                    name = if (obj.getInt("isMustPay") == 1) { "(锁) " } else { "" } + getChapterName(type, obj.getString("sectionName"), obj.getString("sectionTitle"))
+                    name = if (obj.getInt("isMustPay") == 1) {
+                        "(锁) "
+                    } else {
+                        ""
+                    } + getChapterName(type, obj.getString("sectionName"), obj.getString("sectionTitle"))
                     date_upload = dateFormat.parse(obj.getString("releaseTime"))?.time ?: 0L
                     chapter_number = obj.getInt("sectionSort").toFloat()
                     url = "/v1/manga/getRead?mangaSectionId=${obj.getInt("sectionId")}"
@@ -666,14 +667,26 @@ class Manhuaren : HttpSource(), ConfigurableSource {
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        SimpleEditTextPreference(screen.context).apply {
+        EditTextPreference(screen.context).apply {
             key = USER_ID_PREF
             title = "用户ID"
+            val userId = preferences.getString(USER_ID_PREF, "")!!
+            summary = userId.ifEmpty { "无用户ID，点击设置" }
+            setOnPreferenceChangeListener { _, newValue ->
+                summary = (newValue as String).ifEmpty { "无用户ID，点击设置" }
+                true
+            }
+        }.let(screen::addPreference)
 
-            setEnabled(false)
+        EditTextPreference(screen.context).apply {
+            key = TOKEN_PREF
+            title = "令牌(Token)"
+            val token = preferences.getString(TOKEN_PREF, "")!!
+            summary = if (token.isEmpty()) "无令牌，点击设置" else "点击查看"
+            setOnPreferenceChangeListener { _, newValue ->
+                summary = if ((newValue as String).isEmpty()) "无令牌，点击设置" else "点击查看"
+                true
+            }
         }.let(screen::addPreference)
     }
 }
-
-internal const val TOKEN_PREF = "token"
-internal const val USER_ID_PREF = "userId"

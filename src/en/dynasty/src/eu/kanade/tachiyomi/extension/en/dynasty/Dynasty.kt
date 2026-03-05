@@ -1,7 +1,6 @@
 package eu.kanade.tachiyomi.extension.en.dynasty
 
 import android.content.SharedPreferences
-import android.util.LruCache
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
@@ -32,13 +31,16 @@ import okio.use
 import org.jsoup.Jsoup
 import rx.Observable
 
-open class Dynasty : HttpSource(), ConfigurableSource {
+class Dynasty :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "Dynasty Scans"
 
     override val lang = "en"
 
-    override val baseUrl = "https://dynasty-scans.com"
+    private val domain = "dynasty-scans.com"
+    override val baseUrl = "https://$domain"
 
     override val supportsLatest = false
 
@@ -50,7 +52,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
     override val client = network.cloudflareClient.newBuilder()
         .addInterceptor(::fetchCoverUrlInterceptor)
         .addInterceptor(::coverInterceptor)
-        .rateLimit(1, 2)
+        .rateLimit(1)
         .build()
 
     private val coverClient = network.cloudflareClient
@@ -58,9 +60,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/$CHAPTERS_DIR/added.json?page=$page", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/$CHAPTERS_DIR/added.json?page=$page", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val data = response.parseAs<BrowseResponse>()
@@ -74,7 +74,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
                     MangaEntry(
                         url = "/${tag.directory}/${tag.permalink}",
                         title = tag.name,
-                        cover = getCoverUrl(tag.directory, tag.permalink),
+                        cover = getCachedCoverUrl(tag.directory, tag.permalink),
                     ).also(entries::add)
 
                     // true if an associated series is found
@@ -100,6 +100,29 @@ open class Dynasty : HttpSource(), ConfigurableSource {
     }
 
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
+        if (query.startsWith("https://") || query.startsWith("deeplink:")) {
+            return deepLink(query)
+        }
+
+        return client.newCall(searchMangaRequest(page, query, filters))
+            .asObservableSuccess()
+            .map { searchMangaParse(it, filters) }
+    }
+
+    private fun deepLink(query: String): Observable<MangasPage> {
+        var query = query
+
+        if (query.startsWith("https://")) {
+            val url = query.toHttpUrl()
+            val path = url.pathSegments
+
+            if (url.host == domain && path.size > 1) {
+                query = "deeplink:${path[0]}:${path[1]}"
+            } else {
+                throw Exception("Invalid url")
+            }
+        }
+
         if (query.startsWith("deeplink:")) {
             var (_, directory, permalink) = query.split(":", limit = 3)
 
@@ -115,7 +138,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
             val entry = MangaEntry(
                 url = "/$directory/$permalink",
                 title = permalink.permalinkToTitle(),
-                cover = getCoverUrl(directory, permalink),
+                cover = getCachedCoverUrl(directory, permalink),
             ).toSManga()
 
             return Observable.just(
@@ -126,9 +149,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
             )
         }
 
-        return client.newCall(searchMangaRequest(page, query, filters))
-            .asObservableSuccess()
-            .map { searchMangaParse(it, filters) }
+        throw Exception("Invalid url")
     }
 
     override fun getFilterList(): FilterList {
@@ -150,8 +171,9 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         )
     }
 
-    // lazy because extension inspector doesn't have implementation
-    private val lruCache by lazy { LruCache<String, Int>(15) }
+    private val lruCache = object : LinkedHashMap<String, Int>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?) = size > 20
+    }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val typeFilter = filters.firstInstance<TypeFilter>()
@@ -188,7 +210,16 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         val url = "$baseUrl/search".toHttpUrl().newBuilder().apply {
             addQueryParameter("q", query.trim())
             filters.firstInstance<SortFilter>().also {
-                addQueryParameter("sort", it.sort)
+                if (it.sort == SMART_SORT) {
+                    val sort = if (query.isNotBlank()) {
+                        BEST_MATCH
+                    } else {
+                        RELEASED_ON
+                    }
+                    addQueryParameter("sort", sort)
+                } else {
+                    addQueryParameter("sort", it.sort)
+                }
             }
             typeFilter.also {
                 it.checked.forEach { type ->
@@ -280,7 +311,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
             val entry = MangaEntry(
                 url = "/$directory/$permalink",
                 title = title,
-                cover = getCoverUrl(directory, permalink),
+                cover = getCachedCoverUrl(directory, permalink),
             )
 
             if (firstEntry == null) {
@@ -313,9 +344,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         )
     }
 
-    override fun getMangaUrl(manga: SManga): String {
-        return baseUrl + manga.url
-    }
+    override fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
 
     override fun mangaDetailsRequest(manga: SManga): Request {
         val mangaPath = "$baseUrl${manga.url}".toHttpUrl().pathSegments
@@ -350,11 +379,14 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         data.tags.forEach { tag ->
             when (tag.type) {
                 "Author" -> authors.add(tag.name)
+
                 "General" -> tags.add(tag.name)
+
                 "Status" -> {
                     publishingStatus.add(tag.name)
                     others.add(tag.type to tag.name)
                 }
+
                 else -> others.add(tag.type to tag.name)
             }
         }
@@ -415,24 +447,49 @@ open class Dynasty : HttpSource(), ConfigurableSource {
             genre = tags.joinToString()
             status = when {
                 publishingStatus.contains("Ongoing") -> SManga.ONGOING
+
                 publishingStatus.contains("Completed") -> SManga.COMPLETED
+
                 publishingStatus.contains("On Hiatus") -> SManga.ON_HIATUS
+
                 publishingStatus.contains("Licensed") -> SManga.LICENSED
+
                 listOf("Dropped", "Cancelled", "Not Updated", "Abandoned", "Removed")
                     .any { publishingStatus.contains(it) } -> SManga.CANCELLED
+
                 else -> SManga.UNKNOWN
             }
-            thumbnail_url = data.cover?.let { buildCoverUrl(it) }
+            // if new cover is same as cached cover, use cached cover
+            // to avoid making HEAD requests in `getHDCoverUrlIfAvailable`
+            thumbnail_url = run {
+                val newCover = data.cover?.let { buildCoverUrl(it) }
+                val cachedCover = getCachedCoverUrl(data.directory, data.permalink)
+
+                if (newCover == null || cachedCover == null) {
+                    newCover?.let { getHDCoverUrlIfAvailable(it) } ?: cachedCover
+                } else {
+                    val path = cachedCover.toHttpUrl().pathSegments
+                    val tmpSDCover = cachedCover.toHttpUrl().newBuilder().apply {
+                        val file = path.last().substringBeforeLast(".") + ".jpg"
+                        setPathSegment(5, "medium")
+                        setPathSegment(path.size - 1, file)
+                    }.toString()
+
+                    if (tmpSDCover == newCover) {
+                        cachedCover
+                    } else {
+                        getHDCoverUrlIfAvailable(newCover)
+                    }
+                }
+            }
         }
     }
 
-    private fun decodeUnicode(input: String): String {
-        return UNICODE_REGEX.replace(input) { matchResult ->
-            matchResult.groupValues[1]
-                .toInt(16)
-                .toChar()
-                .toString()
-        }
+    private fun decodeUnicode(input: String): String = UNICODE_REGEX.replace(input) { matchResult ->
+        matchResult.groupValues[1]
+            .toInt(16)
+            .toChar()
+            .toString()
     }
 
     private fun chapterDetailsParse(response: Response): SManga {
@@ -470,30 +527,13 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         }
     }
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return if (manga.url.contains("/$CHAPTERS_DIR/")) {
-            Observable.just(
-                listOf(
-                    SChapter.create().apply {
-                        url = manga.url
-                        name = "Chapter"
-                        date_upload = dateFormat.tryParse(
-                            manga.description
-                                ?.substringAfter("Released:", ""),
-                        )
-                    },
-                ),
-            )
-        } else {
-            super.fetchChapterList(manga)
-        }
-    }
-
-    override fun chapterListRequest(manga: SManga): Request {
-        return mangaDetailsRequest(manga)
-    }
+    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
 
     override fun chapterListParse(response: Response): List<SChapter> {
+        if (response.request.url.pathSegments[0] == CHAPTERS_DIR) {
+            return listOf(individualChapterParse(response))
+        }
+
         val data = response.parseAs<MangaResponse>()
         val chapters = data.taggings.toMutableList()
 
@@ -542,9 +582,18 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         }
     }
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        return baseUrl + chapter.url
+    private fun individualChapterParse(response: Response): SChapter {
+        val data = response.parseAs<ChapterResponse>()
+
+        return SChapter.create().apply {
+            url = "/$CHAPTERS_DIR/${data.permalink}"
+            name = "Chapter"
+            scanlator = data.tags.filter { it.type == "Scanlator" }.joinToString { it.name }
+            date_upload = dateFormat.tryParse(data.releasedOn)
+        }
     }
+
+    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
 
     override fun pageListRequest(chapter: SChapter): Request {
         val chapterPath = "$baseUrl${chapter.url}".toHttpUrl().pathSegments
@@ -606,7 +655,7 @@ open class Dynasty : HttpSource(), ConfigurableSource {
             .parseAs()
     }
 
-    private fun getCoverUrl(directory: String?, permalink: String): String? {
+    private fun getCachedCoverUrl(directory: String?, permalink: String): String? {
         directory ?: return null
 
         if (directory == CHAPTERS_DIR) {
@@ -619,26 +668,51 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         return buildCoverUrl(file)
     }
 
+    private fun getHDCoverUrlIfAvailable(coverUrl: String): String {
+        val path = coverUrl.toHttpUrl().pathSegments
+
+        if (path.size == 7 && path[5] == "medium") {
+            listOf("jpg", "png", "jpeg", "webp").forEach { format ->
+                val newUrl = coverUrl.toHttpUrl().newBuilder().apply {
+                    val file = path.last().substringBeforeLast(".") + ".$format"
+                    setPathSegment(5, "original")
+                    setPathSegment(path.size - 1, file)
+                }.build()
+
+                val request = Request.Builder()
+                    .url(newUrl)
+                    .headers(headers)
+                    .head()
+                    .build()
+
+                if (coverClient.newCall(request).execute().isSuccessful) {
+                    return newUrl.toString()
+                }
+            }
+        }
+
+        return coverUrl
+    }
+
     private fun buildCoverUrl(file: String): String {
         val path = "$baseUrl$file".toHttpUrl()
             .encodedPath
             .removePrefix("/")
 
-        return baseUrl.toHttpUrl()
-            .newBuilder()
-            .addEncodedPathSegments(path)
-            .fragment(COVER_URL_FRAGMENT)
-            .build()
-            .toString()
+        return baseUrl.toHttpUrl().newBuilder().apply {
+            if (!path.startsWith("system/")) {
+                addEncodedPathSegments("system/tag_contents_covers/000")
+            }
+            addEncodedPathSegments(path)
+            fragment(COVER_URL_FRAGMENT)
+        }.toString()
     }
 
-    private fun buildChapterCoverFetchUrl(permalink: String): String {
-        return HttpUrl.Builder().apply {
-            scheme("https")
-            host(COVER_FETCH_HOST)
-            addQueryParameter("permalink", permalink)
-        }.build().toString()
-    }
+    private fun buildChapterCoverFetchUrl(permalink: String): String = HttpUrl.Builder().apply {
+        scheme("https")
+        host(COVER_FETCH_HOST)
+        addQueryParameter("permalink", permalink)
+    }.build().toString()
 
     private fun fetchCoverUrlInterceptor(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -677,19 +751,13 @@ open class Dynasty : HttpSource(), ConfigurableSource {
         }
     }
 
-    private fun String.permalinkToTitle(): String {
-        return split('_')
-            .joinToString(" ") { word ->
-                word.replaceFirstChar { it.uppercase() }
-            }
-    }
+    private fun String.permalinkToTitle(): String = split('_')
+        .joinToString(" ") { word ->
+            word.replaceFirstChar { it.uppercase() }
+        }
 
-    override fun imageUrlParse(response: Response) =
-        throw UnsupportedOperationException()
-    override fun latestUpdatesRequest(page: Int) =
-        throw UnsupportedOperationException()
-    override fun latestUpdatesParse(response: Response) =
-        throw UnsupportedOperationException()
-    override fun searchMangaParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
+    override fun latestUpdatesRequest(page: Int) = throw UnsupportedOperationException()
+    override fun latestUpdatesParse(response: Response) = throw UnsupportedOperationException()
+    override fun searchMangaParse(response: Response) = throw UnsupportedOperationException()
 }

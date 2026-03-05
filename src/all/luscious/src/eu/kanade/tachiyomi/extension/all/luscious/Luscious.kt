@@ -21,28 +21,30 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.ResponseBody.Companion.asResponseBody
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
 import java.util.Calendar
 
 abstract class Luscious(
     final override val lang: String,
-) : ConfigurableSource, HttpSource() {
+) : HttpSource(),
+    ConfigurableSource {
 
     override val supportsLatest: Boolean = true
     override val name: String = "Luscious"
@@ -55,6 +57,9 @@ abstract class Luscious(
 
     private val json: Json by injectLazy()
 
+    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
+        .add("Referer", "$baseUrl/")
+
     override val client: OkHttpClient
         get() = network.cloudflareClient.newBuilder()
             .addNetworkInterceptor(rewriteOctetStream)
@@ -63,8 +68,8 @@ abstract class Luscious(
     private val rewriteOctetStream: Interceptor = Interceptor { chain ->
         val originalResponse: Response = chain.proceed(chain.request())
         if (originalResponse.headers("Content-Type").contains("application/octet-stream") && originalResponse.request.url.toString().contains(".webp")) {
-            val orgBody = originalResponse.body.bytes()
-            val newBody = orgBody.toResponseBody("image/webp".toMediaTypeOrNull())
+            val orgBody = originalResponse.body.source()
+            val newBody = orgBody.asResponseBody("image/webp".toMediaType())
             originalResponse.newBuilder()
                 .body(newBody)
                 .build()
@@ -75,21 +80,19 @@ abstract class Luscious(
 
     private val lusLang: String = toLusLang(lang)
 
-    private fun toLusLang(lang: String): String {
-        return when (lang) {
-            "all" -> FILTER_VALUE_IGNORE
-            "en" -> "1"
-            "ja" -> "2"
-            "es" -> "3"
-            "it" -> "4"
-            "de" -> "5"
-            "fr" -> "6"
-            "zh" -> "8"
-            "ko" -> "9"
-            "pt-BR" -> "100"
-            "th" -> "101"
-            else -> "99"
-        }
+    private fun toLusLang(lang: String): String = when (lang) {
+        "all" -> FILTER_VALUE_IGNORE
+        "en" -> "1"
+        "ja" -> "2"
+        "es" -> "3"
+        "it" -> "4"
+        "de" -> "5"
+        "fr" -> "6"
+        "zh" -> "8"
+        "ko" -> "9"
+        "pt-BR" -> "100"
+        "th" -> "101"
+        else -> "99"
     }
 
     // Common
@@ -226,10 +229,8 @@ abstract class Luscious(
         }
     }
 
-    private fun buildAlbumInfoRequestInput(id: String): JsonObject {
-        return buildJsonObject {
-            put("id", id)
-        }
+    private fun buildAlbumInfoRequestInput(id: String): JsonObject = buildJsonObject {
+        put("id", id)
     }
 
     private fun buildAlbumInfoRequest(id: String): Request {
@@ -269,6 +270,7 @@ abstract class Luscious(
                 chapter.chapter_number = 1F
                 chapters.add(chapter)
             }
+
             false -> {
                 var nextPage = true
                 var page = 2
@@ -292,9 +294,9 @@ abstract class Luscious(
                             url.startsWith("//") -> chapter.url = "https:$url"
                             else -> chapter.url = url
                         }
-                        chapter.chapter_number = it.jsonObject["position"]!!.jsonPrimitive.int.toFloat()
+                        chapter.chapter_number = it.jsonObject["position"]!!.jsonPrimitive.double.toFloat()
                         chapter.name = chapter.chapter_number.toInt().toString() + " - " + it.jsonObject["title"]!!.jsonPrimitive.content
-                        chapter.date_upload = "${it.jsonObject["created"]!!.jsonPrimitive.long}000".toLong()
+                        chapter.date_upload = (it.jsonObject["created"]!!.jsonPrimitive.double.toLong()) * 1000
                         chapters.add(chapter)
                     }
                     if (nextPage) {
@@ -314,20 +316,18 @@ abstract class Luscious(
 
     // Pages
 
-    private fun buildAlbumPicturesRequestInput(id: String, page: Int): JsonObject {
-        return buildJsonObject {
-            putJsonObject("input") {
-                putJsonArray("filters") {
-                    add(
-                        buildJsonObject {
-                            put("name", "album_id")
-                            put("value", id)
-                        },
-                    )
-                }
-                put("display", getSortPref())
-                put("page", page)
+    private fun buildAlbumPicturesRequestInput(id: String, page: Int): JsonObject = buildJsonObject {
+        putJsonObject("input") {
+            putJsonArray("filters") {
+                add(
+                    buildJsonObject {
+                        put("name", "album_id")
+                        put("value", id)
+                    },
+                )
             }
+            put("display", getSortPref())
+            put("page", page)
         }
     }
 
@@ -375,18 +375,17 @@ abstract class Luscious(
         return pages
     }
 
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        return when (getMergeChapterPref()) {
-            true -> {
-                val id = chapter.url.substringAfterLast("_").removeSuffix("/")
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = when (getMergeChapterPref()) {
+        true -> {
+            val id = chapter.url.substringAfterLast("_").removeSuffix("/")
 
-                client.newCall(GET(buildAlbumPicturesPageUrl(id, 1)))
-                    .asObservableSuccess()
-                    .map { parseAlbumPicturesResponseMergeChapter(it) }
-            }
-            false -> {
-                Observable.just(listOf(Page(0, chapter.url, chapter.url)))
-            }
+            client.newCall(GET(buildAlbumPicturesPageUrl(id, 1)))
+                .asObservableSuccess()
+                .map { parseAlbumPicturesResponseMergeChapter(it) }
+        }
+
+        false -> {
+            Observable.just(listOf(Page(0, chapter.url, chapter.url)))
         }
     }
 
@@ -414,9 +413,7 @@ abstract class Luscious(
 
     // Details
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET("$baseUrl${manga.url}", headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET("$baseUrl${manga.url}", headers)
 
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
         val id = manga.url.substringAfterLast("_").removeSuffix("/")
@@ -481,15 +478,19 @@ abstract class Luscious(
         query,
     )
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith("ID:")) {
-            val id = query.substringAfterLast("ID:")
-            client.newCall(buildAlbumInfoRequest(id))
-                .asObservableSuccess()
-                .map { MangasPage(listOf(detailsParse(it)), false) }
-        } else {
-            super.fetchSearchManga(page, query, filters)
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith("ID:")) {
+        val id = query.substringAfterLast("ID:")
+        client.newCall(buildAlbumInfoRequest(id))
+            .asObservableSuccess()
+            .map { MangasPage(listOf(detailsParse(it)), false) }
+    } else if (query.startsWith("ALBUM:")) {
+        val album = query.substringAfterLast("ALBUM:")
+        val id = album.split("_").last()
+        client.newCall(buildAlbumInfoRequest(id))
+            .asObservableSuccess()
+            .map { MangasPage(listOf(detailsParse(it)), false) }
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     class TriStateFilterOption(name: String, val value: String) : Filter.TriState(name)
@@ -845,7 +846,7 @@ abstract class Luscious(
         private const val MIRROR_PREF_KEY = "MIRROR"
         private const val MIRROR_PREF_TITLE = "Mirror"
         private val MIRROR_PREF_ENTRIES = arrayOf("Guest", "API", "Members")
-        private val MIRROR_PREF_ENTRY_VALUES = arrayOf("https://www.luscious.net", "https://api.luscious.net", "https://members.luscious.net")
+        private val MIRROR_PREF_ENTRY_VALUES = arrayOf("https://www.luscious.net", "https://apicdn.luscious.net", "https://members.luscious.net")
         private val MIRROR_PREF_DEFAULT_VALUE = MIRROR_PREF_ENTRY_VALUES[0]
     }
 

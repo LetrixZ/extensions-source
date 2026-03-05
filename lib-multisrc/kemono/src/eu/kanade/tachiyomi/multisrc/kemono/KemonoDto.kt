@@ -10,7 +10,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 @Serializable
-class KemonoFavouritesDto(
+class KemonoFavoritesDto(
     val id: String,
     val name: String,
     val service: String,
@@ -112,8 +112,6 @@ class KemonoAttachmentDto(var name: String? = null, val path: String) {
     override fun toString() = path + if (name != null) "?f=$name" else ""
 }
 
-private fun getApiDateFormat() =
-    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ENGLISH)
+private fun getApiDateFormat() = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ENGLISH)
 
-private fun getChapterNameDateFormat() =
-    SimpleDateFormat("yyyy-MM-dd 'at' HH:mm:ss", Locale.ENGLISH)
+private fun getChapterNameDateFormat() = SimpleDateFormat("yyyy-MM-dd 'at' HH:mm:ss", Locale.ENGLISH)

@@ -20,10 +20,14 @@ import uy.kohesive.injekt.injectLazy
 
 class Iqiyi : ParsedHttpSource() {
     override val name: String = "爱奇艺叭嗒"
-    override val lang: String = "zh"
+    override val lang get() = "zh-Hans"
+    override val id get() = 2198877009406729694
     override val supportsLatest: Boolean = true
     override val baseUrl: String = "https://www.iqiyi.com/manhua"
     private val json: Json by injectLazy()
+
+    override fun headersBuilder() = super.headersBuilder()
+        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
 
     // Popular
 
@@ -45,9 +49,7 @@ class Iqiyi : ParsedHttpSource() {
 
     // Search
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return GET("$baseUrl/search-keyword=${query}_$page", headers)
-    }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = GET("$baseUrl/search-keyword=${query}_$page", headers)
 
     override fun searchMangaNextPageSelector(): String = popularMangaNextPageSelector()
     override fun searchMangaSelector(): String = "ul.stacksList > li.stacksBook"
@@ -80,20 +82,18 @@ class Iqiyi : ParsedHttpSource() {
         return GET("$baseUrl/catalog/$id/", headers)
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        return json.parseToJsonElement(response.body.string())
-            .jsonObject["data"]!!.jsonObject["episodes"]!!.jsonArray.map {
-            SChapter.create().apply {
-                val comicId = it.jsonObject["comicId"]!!.jsonPrimitive.content
-                val episodeId = it.jsonObject["episodeId"]!!.jsonPrimitive.content
-                val episodeTitle = it.jsonObject["episodeTitle"]!!.jsonPrimitive.content
-                val episodeOrder = it.jsonObject["episodeOrder"]!!.jsonPrimitive.int
-                url = "/reader/${comicId}_$episodeId.html"
-                name = "$episodeOrder $episodeTitle"
-                date_upload = it.jsonObject["firstOnlineTime"]!!.jsonPrimitive.long
-            }
-        }.reversed()
-    }
+    override fun chapterListParse(response: Response): List<SChapter> = json.parseToJsonElement(response.body.string())
+        .jsonObject["data"]!!.jsonObject["episodes"]!!.jsonArray.map {
+        SChapter.create().apply {
+            val comicId = it.jsonObject["comicId"]!!.jsonPrimitive.content
+            val episodeId = it.jsonObject["episodeId"]!!.jsonPrimitive.content
+            val episodeTitle = it.jsonObject["episodeTitle"]!!.jsonPrimitive.content
+            val episodeOrder = it.jsonObject["episodeOrder"]!!.jsonPrimitive.int
+            url = "/reader/${comicId}_$episodeId.html"
+            name = "$episodeOrder $episodeTitle"
+            date_upload = it.jsonObject["firstOnlineTime"]!!.jsonPrimitive.long
+        }
+    }.reversed()
 
     override fun chapterListSelector(): String = throw UnsupportedOperationException()
     override fun chapterFromElement(element: Element): SChapter = throw UnsupportedOperationException()

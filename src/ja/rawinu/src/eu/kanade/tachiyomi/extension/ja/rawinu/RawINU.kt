@@ -7,6 +7,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.cookieinterceptor.CookieInterceptor
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
@@ -15,14 +16,18 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
-class RawINU : FMReader(
-    "RawINU",
-    "https://rawinu.com",
-    "ja",
-) {
+private const val DOMAIN = "rawinu.com"
+
+class RawINU :
+    FMReader(
+        "RawINU",
+        "https://$DOMAIN",
+        "ja",
+    ) {
     override val client = super.client.newBuilder()
         .rateLimitHost(baseUrl.toHttpUrl(), 2)
         .addInterceptor(::ddosChallengeInterceptor)
+        .addNetworkInterceptor(CookieInterceptor(DOMAIN, "smartlink_shown" to "1"))
         .build()
 
     private val patternDdosKey = """'([a-f0-9]{32})'""".toRegex()

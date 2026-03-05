@@ -11,16 +11,21 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.tryParse
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 class HentaiNexus : ParsedHttpSource() {
 
@@ -65,14 +70,12 @@ class HentaiNexus : ParsedHttpSource() {
 
     override fun latestUpdatesNextPageSelector() = throw UnsupportedOperationException()
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_ID_SEARCH)) {
-            val id = query.removePrefix(PREFIX_ID_SEARCH)
-            client.newCall(GET("$baseUrl/view/$id", headers)).asObservableSuccess()
-                .map { MangasPage(listOf(mangaDetailsParse(it).apply { url = "/view/$id" }), false) }
-        } else {
-            super.fetchSearchManga(page, query, filters)
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_ID_SEARCH)) {
+        val id = query.removePrefix(PREFIX_ID_SEARCH)
+        client.newCall(GET("$baseUrl/view/$id", headers)).asObservableSuccess()
+            .map { MangasPage(listOf(mangaDetailsParse(it).apply { url = "/view/$id" }), false) }
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -126,16 +129,22 @@ class HentaiNexus : ParsedHttpSource() {
         thumbnail_url = document.selectFirst("figure.image img")?.attr("src")
     }
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        val id = manga.url.split("/").last()
+    private val dateFormat by lazy {
+        SimpleDateFormat("dd MMMM yyyy", Locale.US)
+    }
 
-        return Observable.just(
-            listOf(
-                SChapter.create().apply {
-                    url = "/read/$id"
-                    name = "Chapter"
-                },
-            ),
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val document = response.asJsoup()
+        val table = document.selectFirst(".view-page-details")!!
+        val dateUploadStr = table.selectFirst("td.viewcolumn:contains(Published) + td")?.text()
+
+        val id = response.request.url.toString().split("/").last()
+        return listOf(
+            SChapter.create().apply {
+                url = "/read/$id"
+                name = "Chapter"
+                date_upload = dateFormat.tryParse(dateUploadStr)
+            },
         )
     }
 

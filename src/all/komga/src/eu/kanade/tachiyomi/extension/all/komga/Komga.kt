@@ -45,7 +45,10 @@ import uy.kohesive.injekt.injectLazy
 import java.security.MessageDigest
 import java.util.Locale
 
-open class Komga(private val suffix: String = "") : ConfigurableSource, UnmeteredSource, HttpSource() {
+open class Komga(private val suffix: String = "") :
+    HttpSource(),
+    ConfigurableSource,
+    UnmeteredSource {
 
     internal val preferences: SharedPreferences by getPreferencesLazy()
 
@@ -76,6 +79,8 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
 
     private val password by lazy { preferences.getString(PREF_PASSWORD, "")!! }
 
+    private val apiKey by lazy { preferences.getString(PREF_API_KEY, "")!! }
+
     private val defaultLibraries
         get() = preferences.getStringSet(PREF_DEFAULT_LIBRARIES, emptySet())!!
 
@@ -83,12 +88,17 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
 
     override fun headersBuilder() = super.headersBuilder()
         .set("User-Agent", "TachiyomiKomga/${AppInfo.getVersionName()}")
+        .also { builder ->
+            if (apiKey.isNotBlank()) {
+                builder.set("X-API-Key", apiKey)
+            }
+        }
 
     override val client: OkHttpClient =
         network.cloudflareClient.newBuilder()
             .authenticator { _, response ->
-                if (response.request.header("Authorization") != null) {
-                    null // Give up, we've already failed to authenticate.
+                if (apiKey.isNotBlank() || response.request.header("Authorization") != null) {
+                    null // Give up if API key is set or we've already failed to authenticate.
                 } else {
                     response.request.newBuilder()
                         .addHeader("Authorization", Credentials.basic(username, password))
@@ -98,29 +108,25 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
             .dns(Dns.SYSTEM) // don't use DNS over HTTPS as it breaks IP addressing
             .build()
 
-    override fun popularMangaRequest(page: Int): Request =
-        searchMangaRequest(
-            page,
-            "",
-            FilterList(
-                SeriesSort(Filter.Sort.Selection(1, true)),
-            ),
-        )
+    override fun popularMangaRequest(page: Int): Request = searchMangaRequest(
+        page,
+        "",
+        FilterList(
+            SeriesSort(Filter.Sort.Selection(1, true)),
+        ),
+    )
 
-    override fun popularMangaParse(response: Response): MangasPage =
-        processSeriesPage(response, baseUrl)
+    override fun popularMangaParse(response: Response): MangasPage = processSeriesPage(response, baseUrl)
 
-    override fun latestUpdatesRequest(page: Int): Request =
-        searchMangaRequest(
-            page,
-            "",
-            FilterList(
-                SeriesSort(Filter.Sort.Selection(3, false)),
-            ),
-        )
+    override fun latestUpdatesRequest(page: Int): Request = searchMangaRequest(
+        page,
+        "",
+        FilterList(
+            SeriesSort(Filter.Sort.Selection(3, false)),
+        ),
+    )
 
-    override fun latestUpdatesParse(response: Response): MangasPage =
-        processSeriesPage(response, baseUrl)
+    override fun latestUpdatesParse(response: Response): MangasPage = processSeriesPage(response, baseUrl)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val collectionId = (filters.find { it is CollectionSelect } as? CollectionSelect)?.let {
@@ -150,6 +156,7 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
         filterList.forEach { filter ->
             when (filter) {
                 is UriFilter -> filter.addToUri(url)
+
                 is Filter.Sort -> {
                     val state = filter.state ?: return@forEach
 
@@ -164,6 +171,7 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
 
                     url.addQueryParameter("sort", sortCriteria)
                 }
+
                 else -> {}
             }
         }
@@ -171,8 +179,7 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
         return GET(url.build(), headers)
     }
 
-    override fun searchMangaParse(response: Response): MangasPage =
-        processSeriesPage(response, baseUrl)
+    override fun searchMangaParse(response: Response): MangasPage = processSeriesPage(response, baseUrl)
 
     private fun processSeriesPage(response: Response, baseUrl: String): MangasPage {
         val data = if (response.isFromReadList()) {
@@ -190,14 +197,12 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
 
     override fun mangaDetailsRequest(manga: SManga) = GET(manga.url, headers)
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        return if (response.isFromReadList()) {
-            response.parseAs<ReadListDto>().toSManga(baseUrl)
-        } else if (response.isFromBook()) {
-            response.parseAs<BookDto>().toSManga(baseUrl)
-        } else {
-            response.parseAs<SeriesDto>().toSManga(baseUrl)
-        }
+    override fun mangaDetailsParse(response: Response): SManga = if (response.isFromReadList()) {
+        response.parseAs<ReadListDto>().toSManga(baseUrl)
+    } else if (response.isFromBook()) {
+        response.parseAs<BookDto>().toSManga(baseUrl)
+    } else {
+        response.parseAs<SeriesDto>().toSManga(baseUrl)
     }
 
     private val chapterNameTemplate
@@ -247,6 +252,7 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
                         .joinToString { it.name }
                     date_upload = when {
                         book.metadata.releaseDate != null -> parseDate(book.metadata.releaseDate)
+
                         book.created != null -> parseDateTime(book.created)
 
                         // XXX: `Book.fileLastModified` actually uses the server's running timezone,
@@ -278,9 +284,7 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
-    override fun imageRequest(page: Page): Request {
-        return GET(page.imageUrl!!, headers = headersBuilder().add("Accept", "image/*,*/*;q=0.8").build())
-    }
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!, headers = headersBuilder().add("Accept", "image/*,*/*;q=0.8").build())
 
     override fun getFilterList(): FilterList {
         fetchFilterOptions()
@@ -377,21 +381,33 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
             key = PREF_ADDRESS,
             restartRequired = true,
         )
+        // API key preference (takes precedence over username/password)
         screen.addEditTextPreference(
-            title = "Username",
+            title = "API key",
             default = "",
-            summary = username.ifBlank { "The user account email" },
-            key = PREF_USERNAME,
-            restartRequired = true,
-        )
-        screen.addEditTextPreference(
-            title = "Password",
-            default = "",
-            summary = if (password.isBlank()) "The user account password" else "*".repeat(password.length),
+            summary = if (apiKey.isBlank()) "Optional: Use an API key for authentication" else "*".repeat(apiKey.length),
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
-            key = PREF_PASSWORD,
+            key = PREF_API_KEY,
             restartRequired = true,
         )
+        // Only show username/password if API key is not set
+        if (apiKey.isBlank()) {
+            screen.addEditTextPreference(
+                title = "Username",
+                default = "",
+                summary = username.ifBlank { "The user account email" },
+                key = PREF_USERNAME,
+                restartRequired = true,
+            )
+            screen.addEditTextPreference(
+                title = "Password",
+                default = "",
+                summary = if (password.isBlank()) "The user account password" else "*".repeat(password.length),
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                key = PREF_PASSWORD,
+                restartRequired = true,
+            )
+        }
 
         MultiSelectListPreference(screen.context).apply {
             key = PREF_DEFAULT_LIBRARIES
@@ -502,8 +518,7 @@ open class Komga(private val suffix: String = "") : ConfigurableSource, Unmetere
 
     fun Response.isFromBook() = request.url.toString().isFromBook()
 
-    private inline fun <reified T> Response.parseAs(): T =
-        json.decodeFromString(body.string())
+    private inline fun <reified T> Response.parseAs(): T = json.decodeFromString(body.string())
 
     private val logTag by lazy { "komga${if (suffix.isNotBlank()) ".$suffix" else ""}" }
 
@@ -529,6 +544,7 @@ private const val PREF_DISPLAY_NAME = "Source display name"
 private const val PREF_ADDRESS = "Address"
 private const val PREF_USERNAME = "Username"
 private const val PREF_PASSWORD = "Password"
+private const val PREF_API_KEY = "API key"
 private const val PREF_DEFAULT_LIBRARIES = "Default libraries"
 private const val PREF_CHAPTER_NAME_TEMPLATE = "Chapter name template"
 private const val PREF_CHAPTER_NAME_TEMPLATE_DEFAULT = "{number} - {title} ({size})"

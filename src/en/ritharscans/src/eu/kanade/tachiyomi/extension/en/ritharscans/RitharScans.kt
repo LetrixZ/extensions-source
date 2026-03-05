@@ -24,13 +24,11 @@ class RitharScans : Keyoapp("RitharScans", "https://ritharscans.com", "en") {
 
     override fun genresRequest() = GET("$baseUrl/search", headers)
 
-    override fun parseGenres(document: Document): List<Genre> {
-        return document.select("[x-data*=genre] button").map {
-            val name = it.text()
-            val id = it.attr("wire:key")
+    override fun parseGenres(document: Document): List<Genre> = document.select("[x-data*=genre] button").map {
+        val name = it.text()
+        val id = it.attr("wire:key")
 
-            Genre(name, id)
-        }
+        Genre(name, id)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -66,10 +64,10 @@ class RitharScans : Keyoapp("RitharScans", "https://ritharscans.com", "en") {
 
     override val descriptionSelector = "#expand_content"
     override val statusSelector = "[alt=Status]"
-    override val genreSelector = "[alt=Type]"
+    override val typeSelector = "[alt=Type]"
 
     override fun pageListParse(document: Document): List<Page> {
-        val (pages, baseLink) = document.selectFirst("[x-data]")!!.attr("x-data")
+        val (pages, baseLink) = document.selectFirst("[x-data*=pages]")!!.attr("x-data")
             .replace(spaces, "")
             .let {
                 val pages = pagesRegex.find(it)!!.groupValues[1]

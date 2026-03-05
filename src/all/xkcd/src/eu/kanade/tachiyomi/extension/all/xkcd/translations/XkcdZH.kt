@@ -6,13 +6,14 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.textinterceptor.TextInterceptorHelper
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Response
 import uy.kohesive.injekt.injectLazy
 
-class XkcdZH : Xkcd("https://xkcd.tw", "zh", "yyyy-MM-dd HH:mm:ss") {
+class XkcdZH : Xkcd("https://xkcd.tw", "zh") {
     override val archive = "/api/strips.json"
 
     override val creator = "兰德尔·门罗"
@@ -23,29 +24,33 @@ class XkcdZH : Xkcd("https://xkcd.tw", "zh", "yyyy-MM-dd HH:mm:ss") {
     override val interactiveText =
         "要體驗本漫畫的互動版請在WebView/瀏覽器中打開。"
 
-    override val altTextUrl = CJK_ALT_TEXT_URL
-
     override val imageSelector = "#content > img:not([id])"
 
     private val json by injectLazy<Json>()
 
-    override fun String.numbered(number: Any) = "[$number] $this"
-
     override fun mangaDetailsRequest(manga: SManga) = GET(baseUrl, headers)
 
-    override fun chapterListParse(response: Response) =
-        json.parseToJsonElement(response.body.string()).jsonObject.values.map {
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val englishDates = getComicDateMappingFromEnglishArchive()
+
+        return json.parseToJsonElement(response.body.string()).jsonObject.values.map {
             val obj = it.jsonObject
-            val number = obj["id"]!!.jsonPrimitive.content
+            val comicNumber = obj["id"]!!.jsonPrimitive.content.toInt()
             val title = obj["title"]!!.jsonPrimitive.content
-            val date = obj["translate_time"]!!.jsonPrimitive.content
             SChapter.create().apply {
-                url = "/$number"
-                name = title.numbered(number)
-                chapter_number = number.toFloat()
-                date_upload = date.timestamp()
+                url = "/$comicNumber"
+                name = chapterTitleFormatter(comicNumber, title)
+                chapter_number = comicNumber.toFloat()
+
+                // use English publication date instead of translation date
+                date_upload = if (englishDates.containsKey(comicNumber)) {
+                    englishDates[comicNumber]!!.timestamp()
+                } else {
+                    0L
+                }
             }
         }
+    }
 
     override fun pageListParse(response: Response): List<Page> {
         // if img tag is empty then it is an interactive comic
@@ -54,9 +59,9 @@ class XkcdZH : Xkcd("https://xkcd.tw", "zh", "yyyy-MM-dd HH:mm:ss") {
         val image = img.attr("abs:src")
 
         // create a text image for the alt text
-        val text = img.attr("alt") + "\n\n" + img.attr("title")
+        val text = TextInterceptorHelper.createUrl(img.attr("alt"), img.attr("title"))
 
-        return listOf(Page(0, "", image), Page(1, "", text.image()))
+        return listOf(Page(0, "", image), Page(1, "", text))
     }
 
     override val chapterListSelector: String

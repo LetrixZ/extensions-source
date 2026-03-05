@@ -16,18 +16,21 @@ import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import kotlinx.serialization.Serializable
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import rx.Observable
+import java.util.concurrent.ConcurrentHashMap
 
 abstract class Iken(
     override val name: String,
     override val lang: String,
     override val baseUrl: String,
     val apiUrl: String = baseUrl,
-) : HttpSource(), ConfigurableSource {
+) : HttpSource(),
+    ConfigurableSource {
 
     override val supportsLatest = true
 
@@ -57,10 +60,12 @@ abstract class Iken(
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/home", headers)
 
+    protected open val popularMangaSelector = "aside a:has(img), .splide:has(.card) li a:has(img)"
+
     override fun popularMangaParse(response: Response): MangasPage {
         val document = response.asJsoup()
 
-        val entries = document.select("aside a:has(img)").mapNotNull {
+        val entries = document.select(popularMangaSelector).mapNotNull {
             titleCache[it.absUrl("href").substringAfter("series/")]?.toSManga()
         }
 
@@ -70,7 +75,7 @@ abstract class Iken(
     override fun latestUpdatesRequest(page: Int): Request {
         val url = "$apiUrl/api/posts".toHttpUrl().newBuilder().apply {
             addQueryParameter("page", page.toString())
-            addQueryParameter("perPage", perPage.toString())
+            addQueryParameter("perPage", PER_PAGE.toString())
             if (apiUrl.startsWith("https://api.", true)) {
                 addQueryParameter("tag", "latestUpdate")
                 addQueryParameter("isNovel", "false")
@@ -85,7 +90,7 @@ abstract class Iken(
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = "$apiUrl/api/query".toHttpUrl().newBuilder().apply {
             addQueryParameter("page", page.toString())
-            addQueryParameter("perPage", perPage.toString())
+            addQueryParameter("perPage", PER_PAGE.toString())
             addQueryParameter("searchTerm", query.trim())
             filters.filterIsInstance<UrlPartFilter>().forEach {
                 it.addUrlParameter(this)
@@ -95,15 +100,39 @@ abstract class Iken(
         return GET(url, headers)
     }
 
+    // Tracks the current page
+    private val pageNumber = ConcurrentHashMap<String, Int>()
+
+    private fun keyFromUrl(url: HttpUrl): String = url.queryParameterNames
+        .sorted()
+        .mapNotNull { paramName ->
+            val value = url.queryParameter(paramName)
+            if (value.isNullOrBlank()) null else "$paramName=$value"
+        }.joinToString("&")
+
     override fun searchMangaParse(response: Response): MangasPage {
         val data = response.parseAs<SearchResponse>()
-        val page = response.request.url.queryParameter("page")!!.toInt()
+        var page = response.request.url.queryParameter("page")!!.toInt()
 
         val entries = data.posts
             .filterNot { it.isNovel }
             .map { it.toSManga() }
 
-        val hasNextPage = data.totalCount > (page * perPage)
+        val hasNextPage = data.totalCount > (page * PER_PAGE)
+
+        val key = keyFromUrl(response.request.url)
+        if (page == 1) pageNumber[key] = 1
+
+        if (entries.isEmpty() && hasNextPage) {
+            pageNumber[key] = pageNumber[key]!! + 1
+            val newUrl = response.request.url.newBuilder()
+                .setQueryParameter("page", pageNumber[key]!!.toString())
+                .build()
+            val newResponse = client.newCall(GET(newUrl)).execute()
+            return searchMangaParse(newResponse)
+        }
+
+        if (!hasNextPage) pageNumber.remove(key)
 
         return MangasPage(entries, hasNextPage)
     }
@@ -128,12 +157,9 @@ abstract class Iken(
         return Observable.just(update)
     }
 
-    override fun mangaDetailsParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun mangaDetailsParse(response: Response) = throw UnsupportedOperationException()
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET("$baseUrl/series/${manga.url}", headers)
-    }
+    override fun chapterListRequest(manga: SManga): Request = GET("$baseUrl/series/${manga.url}", headers)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val userId = userIdRegex.find(response.body.string())?.groupValues?.get(1) ?: ""
@@ -147,9 +173,12 @@ abstract class Iken(
         assert(!data.post.isNovel) { "Novels are unsupported" }
 
         return data.post.chapters
-            .filter { it.isPublic() && (it.isAccessible() || (preferences.getBoolean(showLockedChapterPrefKey, false) && it.isLocked())) }
+            .filter { it.isPublic() && (it.isAccessible() || (preferences.getBoolean(SHOW_LOCKED_CHAPTER_PREF_KEY, false) && it.isLocked())) }
             .map { it.toSChapter(data.post.slug) }
     }
+
+    // some extensions need to sort image urls by filename, override this to true if so
+    protected open val sortPagesByFilename = false
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
@@ -158,8 +187,22 @@ abstract class Iken(
             throw Exception("Unlock chapter in webview")
         }
 
-        return document.getNextJson("images").parseAs<List<PageParseDto>>().mapIndexed { idx, p ->
-            Page(idx, imageUrl = p.url)
+        val pages = document.getNextJson("images").parseAs<List<PageParseDto>>()
+
+        val sortedPages = if (sortPagesByFilename) {
+            pages.sortedWith(
+                compareBy { page ->
+                    val filename = page.url.substringAfterLast('/')
+                    val number = Regex("\\d+").find(filename)?.value?.toIntOrNull() ?: Int.MAX_VALUE
+                    number
+                },
+            )
+        } else {
+            pages
+        }
+
+        return sortedPages.mapIndexed { idx, p ->
+            Page(idx, imageUrl = p.url.replace(" ", "%20"))
         }
     }
 
@@ -170,14 +213,13 @@ abstract class Iken(
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         SwitchPreferenceCompat(screen.context).apply {
-            key = showLockedChapterPrefKey
-            title = "Show locked chapters"
+            key = SHOW_LOCKED_CHAPTER_PREF_KEY
+            title = "Show inaccessible chapters"
             setDefaultValue(false)
         }.also(screen::addPreference)
     }
 
-    override fun imageUrlParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     protected fun Document.getNextJson(key: String): String {
         val data = selectFirst("script:containsData($key)")
@@ -200,8 +242,10 @@ abstract class Iken(
 
         return "\"${data.substring(start, i)}\"".parseAs<String>()
     }
-}
 
-private const val perPage = 18
-private const val showLockedChapterPrefKey = "pref_show_locked_chapters"
-private val userIdRegex = Regex(""""user\\":\{\\"id\\":\\"([^"']+)\\"""")
+    companion object {
+        const val PER_PAGE = 18
+        const val SHOW_LOCKED_CHAPTER_PREF_KEY = "pref_show_locked_chapters"
+        val userIdRegex = Regex(""""user\\":\{\\"id\\":\\"([^"']+)\\"""")
+    }
+}

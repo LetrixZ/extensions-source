@@ -17,7 +17,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.ResponseBody.Companion.asResponseBody
 import uy.kohesive.injekt.injectLazy
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -40,9 +40,8 @@ class Tappytoon(override val lang: String) : HttpSource() {
             }
             // Fix image content type
             val type = IMG_CONTENT_TYPE.toMediaType()
-            val body = res.body.bytes().toResponseBody(type)
-            return@addInterceptor res.newBuilder().body(body)
-                .header("Content-Type", IMG_CONTENT_TYPE).build()
+            val body = res.body.source().asResponseBody(type)
+            return@addInterceptor res.newBuilder().body(body).build()
         }
         // Throw JSON error if available
         if (mime == "application/json") {
@@ -78,23 +77,21 @@ class Tappytoon(override val lang: String) : HttpSource() {
         .set("User-Agent", System.getProperty("http.agent")!!)
         .set("Referer", "https://www.tappytoon.com/")
 
-    override fun latestUpdatesRequest(page: Int) =
-        apiUrl.newBuilder().run {
-            addEncodedPathSegment("comics")
-            addEncodedQueryParameter("day_of_week", day)
-            addEncodedQueryParameter("locale", lang)
-            GET(toString(), apiHeaders)
-        }
+    override fun latestUpdatesRequest(page: Int) = apiUrl.newBuilder().run {
+        addEncodedPathSegment("comics")
+        addEncodedQueryParameter("day_of_week", day)
+        addEncodedQueryParameter("locale", lang)
+        GET(toString(), apiHeaders)
+    }
 
-    override fun popularMangaRequest(page: Int) =
-        apiUrl.newBuilder().run {
-            addEncodedPathSegment("comics")
-            addEncodedQueryParameter("sort_by", "trending")
-            // Sort is only available for completed series
-            addEncodedQueryParameter("filter", "completed")
-            addEncodedQueryParameter("locale", lang)
-            GET(toString(), apiHeaders)
-        }
+    override fun popularMangaRequest(page: Int) = apiUrl.newBuilder().run {
+        addEncodedPathSegment("comics")
+        addEncodedQueryParameter("sort_by", "trending")
+        // Sort is only available for completed series
+        addEncodedQueryParameter("filter", "completed")
+        addEncodedQueryParameter("locale", lang)
+        GET(toString(), apiHeaders)
+    }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         if (nextUrl != null) return GET(nextUrl!!, apiHeaders)
@@ -112,80 +109,70 @@ class Tappytoon(override val lang: String) : HttpSource() {
     }
 
     // Request the real URL for the webview
-    override fun mangaDetailsRequest(manga: SManga) =
-        GET("$baseUrl/comics/${manga.slug}", headers)
+    override fun mangaDetailsRequest(manga: SManga) = GET("$baseUrl/comics/${manga.slug}", headers)
 
-    override fun chapterListRequest(manga: SManga) =
-        apiUrl.newBuilder().run {
-            addEncodedPathSegments("comics/${manga.id}/chapters")
-            addEncodedQueryParameter("locale", lang)
-            GET(toString(), apiHeaders)
-        }
+    override fun chapterListRequest(manga: SManga) = apiUrl.newBuilder().run {
+        addEncodedPathSegments("comics/${manga.id}/chapters")
+        addEncodedQueryParameter("locale", lang)
+        GET(toString(), apiHeaders)
+    }
 
-    override fun pageListRequest(chapter: SChapter) =
-        apiUrl.newBuilder().run {
-            addEncodedPathSegments("content-delivery/contents")
-            addEncodedQueryParameter("chapterId", chapter.url)
-            addEncodedQueryParameter("variant", "high")
-            addEncodedQueryParameter("locale", lang)
-            GET(toString(), apiHeaders)
-        }
+    override fun pageListRequest(chapter: SChapter) = apiUrl.newBuilder().run {
+        addEncodedPathSegments("content-delivery/contents")
+        addEncodedQueryParameter("chapterId", chapter.url)
+        addEncodedQueryParameter("variant", "high")
+        addEncodedQueryParameter("locale", lang)
+        GET(toString(), apiHeaders)
+    }
 
-    override fun latestUpdatesParse(response: Response) =
-        response.parse<List<Comic>>().accessible.map {
-            SManga.create().apply {
-                url = it.toString()
-                title = it.title
-                description = it.longDescription
-                thumbnail_url = it.posterThumbnailUrl
-                author = it.authors.joinToString()
-                artist = author
-                genre = buildString {
-                    it.genres.joinToString(this, postfix = ", ")
-                    append("Rating: ").append(it.ageRating)
-                }
-                status = when {
-                    it.isCompleted -> SManga.COMPLETED
-                    !it.isHiatus -> SManga.ONGOING
-                    else -> SManga.UNKNOWN
-                }
+    override fun latestUpdatesParse(response: Response) = response.parse<List<Comic>>().accessible.map {
+        SManga.create().apply {
+            url = it.toString()
+            title = it.title
+            description = it.longDescription
+            thumbnail_url = it.posterThumbnailUrl
+            author = it.authors.joinToString()
+            artist = author
+            genre = buildString {
+                it.genres.joinToString(this, postfix = ", ")
+                append("Rating: ").append(it.ageRating)
             }
-        }.run { MangasPage(this, false) }
-
-    override fun popularMangaParse(response: Response) =
-        latestUpdatesParse(response)
-
-    override fun searchMangaParse(response: Response) =
-        response.headers["Link"].let {
-            nextUrl = it?.substringAfter('<')?.substringBefore('>')
-            latestUpdatesParse(response).copy(hasNextPage = it != null)
-        }
-
-    override fun chapterListParse(response: Response) =
-        response.parse<List<Chapter>>().accessible.asReversed().map {
-            SChapter.create().apply {
-                name = it.toString()
-                url = it.id.toString()
-                chapter_number = it.order + 1f
-                date_upload = dateFormat.parse(it.createdAt)?.time ?: 0L
+            status = when {
+                it.isCompleted -> SManga.COMPLETED
+                !it.isHiatus -> SManga.ONGOING
+                else -> SManga.UNKNOWN
             }
         }
+    }.run { MangasPage(this, false) }
 
-    override fun pageListParse(response: Response) =
-        response.parse<Media>().mapIndexed { idx, img ->
-            Page(idx, "", img.toString())
+    override fun popularMangaParse(response: Response) = latestUpdatesParse(response)
+
+    override fun searchMangaParse(response: Response) = response.headers["Link"].let {
+        nextUrl = it?.substringAfter('<')?.substringBefore('>')
+        latestUpdatesParse(response).copy(hasNextPage = it != null)
+    }
+
+    override fun chapterListParse(response: Response) = response.parse<List<Chapter>>().accessible.asReversed().map {
+        SChapter.create().apply {
+            name = it.toString()
+            url = it.id.toString()
+            chapter_number = it.order + 1f
+            date_upload = dateFormat.parse(it.willAccessibleAt)?.time ?: 0L
         }
+    }
 
-    override fun fetchMangaDetails(manga: SManga) =
-        rx.Observable.just(manga.apply { initialized = true })!!
+    override fun pageListParse(response: Response) = response.parse<Media>().mapIndexed { idx, img ->
+        Page(idx, "", img.toString())
+    }
+
+    override fun fetchMangaDetails(manga: SManga) = rx.Observable.just(manga.apply { initialized = true })!!
 
     override fun getFilterList() = FilterList(
         Filter.Header("NOTE: can't be used with text search!"),
         Genre(genres.keys.toTypedArray()),
     )
 
-    private inline fun <reified T> Response.parse() =
-        json.decodeFromJsonElement<T>(json.parseToJsonElement(body.string()))
+    private inline fun <reified T> Response.parse() = json.decodeFromJsonElement<T>(json.parseToJsonElement(body.string()))
 
     class Genre(values: Array<String>) : Filter.Select<String>("Genre", values)
 
@@ -198,11 +185,9 @@ class Tappytoon(override val lang: String) : HttpSource() {
     private inline val SManga.id: String
         get() = url.substringAfter('|')
 
-    override fun mangaDetailsParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun mangaDetailsParse(response: Response) = throw UnsupportedOperationException()
 
-    override fun imageUrlParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     companion object {
         private const val IMG_CONTENT_TYPE = "image/jpeg"

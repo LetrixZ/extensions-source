@@ -28,7 +28,9 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.ResponseBody.Companion.asResponseBody
+import okio.buffer
+import okio.cipherSource
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
@@ -37,7 +39,9 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class Manwa : ParsedHttpSource(), ConfigurableSource {
+class Manwa :
+    ParsedHttpSource(),
+    ConfigurableSource {
     override val name: String = "漫蛙"
     override val lang: String = "zh"
     override val supportsLatest: Boolean = true
@@ -57,13 +61,12 @@ class Manwa : ParsedHttpSource(), ConfigurableSource {
         val originalResponse: Response = chain.proceed(chain.request())
         if (originalResponse.request.url.toString().endsWith("?v=20220724")) {
             // Decrypt images in mangas
-            val orgBody = originalResponse.body.bytes()
             val key = "my2ecret782ecret".toByteArray()
             val aesKey = SecretKeySpec(key, "AES")
             val cipher = Cipher.getInstance("AES/CBC/NOPADDING")
             cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(key))
-            val result = cipher.doFinal(orgBody)
-            val newBody = result.toResponseBody("image/webp".toMediaTypeOrNull())
+            val result = originalResponse.body.source().cipherSource(cipher).buffer()
+            val newBody = result.asResponseBody("image/webp".toMediaTypeOrNull())
             originalResponse.newBuilder()
                 .body(newBody)
                 .build()
@@ -194,8 +197,7 @@ class Manwa : ParsedHttpSource(), ConfigurableSource {
 
     override fun searchMangaNextPageSelector(): String? = throw UnsupportedOperationException()
     override fun searchMangaSelector(): String = throw UnsupportedOperationException()
-    override fun searchMangaFromElement(element: Element): SManga =
-        throw UnsupportedOperationException()
+    override fun searchMangaFromElement(element: Element): SManga = throw UnsupportedOperationException()
 
     @Volatile
     private var isUpdateTag = false
@@ -245,9 +247,7 @@ class Manwa : ParsedHttpSource(), ConfigurableSource {
         name = element.text()
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        return super.chapterListParse(response).reversed()
-    }
+    override fun chapterListParse(response: Response): List<SChapter> = super.chapterListParse(response).reversed()
 
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
         client.newCall(GET("$baseUrl/static/images/pv.gif")).execute()
@@ -255,12 +255,10 @@ class Manwa : ParsedHttpSource(), ConfigurableSource {
     }
 
     // Pages
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(
-            "$baseUrl${chapter.url}${preferences.getString(IMAGE_HOST_KEY, "")}",
-            headers,
-        )
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET(
+        "$baseUrl${chapter.url}${preferences.getString(IMAGE_HOST_KEY, "")}",
+        headers,
+    )
 
     override fun pageListParse(document: Document): List<Page> = mutableListOf<Page>().apply {
         val cssQuery = "#cp_img > div.img-content > img[data-r-src]"

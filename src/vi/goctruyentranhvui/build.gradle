@@ -1,0 +1,8 @@
+ext {
+    extName = 'Goc Truyen Tranh Vui'
+    extClass = '.GocTruyenTranhVui'
+    extVersionCode = 9
+    isNsfw = false
+}
+
+apply from: "$rootDir/common.gradle"

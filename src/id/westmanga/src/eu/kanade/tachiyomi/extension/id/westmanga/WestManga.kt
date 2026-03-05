@@ -19,6 +19,7 @@ import javax.crypto.spec.SecretKeySpec
 class WestManga : HttpSource() {
     override val name = "West Manga"
     override val baseUrl = "https://westmanga.me"
+    private val apiUrl = "https://data.westmanga.me"
     override val lang = "id"
     override val id = 8883916630998758688
     override val supportsLatest = true
@@ -28,20 +29,16 @@ class WestManga : HttpSource() {
     override fun headersBuilder() = super.headersBuilder()
         .set("Referer", "$baseUrl/")
 
-    override fun popularMangaRequest(page: Int) =
-        searchMangaRequest(page, "", SortFilter.popular)
+    override fun popularMangaRequest(page: Int) = searchMangaRequest(page, "", SortFilter.popular)
 
-    override fun popularMangaParse(response: Response) =
-        searchMangaParse(response)
+    override fun popularMangaParse(response: Response) = searchMangaParse(response)
 
-    override fun latestUpdatesRequest(page: Int) =
-        searchMangaRequest(page, "", SortFilter.latest)
+    override fun latestUpdatesRequest(page: Int) = searchMangaRequest(page, "", SortFilter.latest)
 
-    override fun latestUpdatesParse(response: Response) =
-        searchMangaParse(response)
+    override fun latestUpdatesParse(response: Response) = searchMangaParse(response)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = baseUrl.toHttpUrl().newBuilder().apply {
+        val url = apiUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("api")
             addPathSegment("contents")
             if (query.isNotBlank()) {
@@ -58,15 +55,13 @@ class WestManga : HttpSource() {
         return apiRequest(url)
     }
 
-    override fun getFilterList(): FilterList {
-        return FilterList(
-            SortFilter(),
-            StatusFilter(),
-            CountryFilter(),
-            ColorFilter(),
-            GenreFilter(),
-        )
-    }
+    override fun getFilterList(): FilterList = FilterList(
+        SortFilter(),
+        StatusFilter(),
+        CountryFilter(),
+        ColorFilter(),
+        GenreFilter(),
+    )
 
     override fun searchMangaParse(response: Response): MangasPage {
         val data = response.parseAs<PaginatedData<BrowseManga>>()
@@ -94,7 +89,7 @@ class WestManga : HttpSource() {
         assert(path.size == 3) { "Migrate from $name to $name" }
         val slug = path[1]
 
-        val url = baseUrl.toHttpUrl().newBuilder()
+        val url = apiUrl.toHttpUrl().newBuilder()
             .addPathSegment("api")
             .addPathSegment("comic")
             .addPathSegment(slug)
@@ -160,8 +155,7 @@ class WestManga : HttpSource() {
         }
     }
 
-    override fun chapterListRequest(manga: SManga) =
-        mangaDetailsRequest(manga)
+    override fun chapterListRequest(manga: SManga) = mangaDetailsRequest(manga)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val data = response.parseAs<Data<Manga>>().data
@@ -185,7 +179,7 @@ class WestManga : HttpSource() {
         assert(path.size == 2) { "Refresh Chapter List" }
         val slug = path[0]
 
-        val url = baseUrl.toHttpUrl().newBuilder()
+        val url = apiUrl.toHttpUrl().newBuilder()
             .addPathSegment("api")
             .addPathSegment("v")
             .addPathSegment(slug)
@@ -214,7 +208,7 @@ class WestManga : HttpSource() {
     private fun apiRequest(url: HttpUrl): Request {
         val timestamp = (System.currentTimeMillis() / 1000).toString()
         val message = "wm-api-request"
-        val key = timestamp + "GET" + url.encodedPath + accessKey + secretKey
+        val key = timestamp + "GET" + url.encodedPath + ACCESS_KEY + SECRET_KEY
         val mac = Mac.getInstance("HmacSHA256")
         val secretKeySpec = SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256")
         mac.init(secretKeySpec)
@@ -223,17 +217,15 @@ class WestManga : HttpSource() {
 
         val apiHeaders = headersBuilder()
             .set("x-wm-request-time", timestamp)
-            .set("x-wm-accses-key", accessKey)
+            .set("x-wm-accses-key", ACCESS_KEY)
             .set("x-wm-request-signature", signature)
             .build()
 
         return GET(url, apiHeaders)
     }
 
-    override fun imageUrlParse(response: Response): String {
-        throw UnsupportedOperationException()
-    }
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 }
 
-private const val accessKey = "WM_WEB_FRONT_END"
-private const val secretKey = "xxxoidj"
+private const val ACCESS_KEY = "WM_WEB_FRONT_END"
+private const val SECRET_KEY = "xxxoidj"

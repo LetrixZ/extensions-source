@@ -31,9 +31,7 @@ open class GoDa(
 
     override val client = network.cloudflareClient
 
-    private fun getKey(link: String): String {
-        return link.substringAfter("/manga/").removeSuffix("/")
-    }
+    private fun getKey(link: String): String = link.substringAfter("/manga/").removeSuffix("/")
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/hots/page/$page", headers)
 
@@ -74,9 +72,7 @@ open class GoDa(
 
     override fun getMangaUrl(manga: SManga) = "$baseUrl/manga/${manga.url}"
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET(getMangaUrl(manga), headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(getMangaUrl(manga), headers)
 
     private fun Element.getMangaId() = selectFirst("#mangachapters")!!.attr("data-mid")
 
@@ -84,12 +80,14 @@ open class GoDa(
         val document = response.asJsoup().selectFirst("main")!!
         val titleElement = document.selectFirst("h1")!!
         val elements = titleElement.parent()!!.parent()!!.children()
-        check(elements.size == 6)
+        check(elements[4].tagName() == "p")
 
         title = titleElement.ownText()
         status = when (titleElement.child(0).text()) {
             "連載中", "Ongoing" -> SManga.ONGOING
             "完結" -> SManga.COMPLETED
+            "停止更新" -> SManga.CANCELLED
+            "休刊" -> SManga.ON_HIATUS
             else -> SManga.UNKNOWN
         }
         author = Entities.unescape(elements[1].children().drop(1).joinToString { it.text().removeSuffix(" ,") })
@@ -110,9 +108,7 @@ open class GoDa(
         fetchChapterList(mangaId)
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        throw UnsupportedOperationException()
-    }
+    override fun chapterListParse(response: Response): List<SChapter> = throw UnsupportedOperationException()
 
     open fun fetchChapterList(mangaId: String): List<SChapter> {
         val response = client.newCall(GET("$baseUrl/manga/get?mid=$mangaId&mode=all", headers)).execute()
@@ -158,21 +154,19 @@ open class GoDa(
         }
     }
 
-    override fun getFilterList(): FilterList =
-        if (!enableGenres) {
-            FilterList()
-        } else if (genres.isEmpty()) {
-            FilterList(listOf(Filter.Header(if (lang == "zh") "点击“重置”刷新分类" else "Tap 'Reset' to load genres")))
-        } else {
-            val list = listOf(
-                Filter.Header(if (lang == "zh") "分类（搜索文本时无效）" else "Filters are ignored when using text search."),
-                UriPartFilter(if (lang == "zh") "分类" else "Genre", genres),
-            )
-            FilterList(list)
-        }
+    override fun getFilterList(): FilterList = if (!enableGenres) {
+        FilterList()
+    } else if (genres.isEmpty()) {
+        FilterList(listOf(Filter.Header(if (lang == "zh") "点击“重置”刷新分类" else "Tap 'Reset' to load genres")))
+    } else {
+        val list = listOf(
+            Filter.Header(if (lang == "zh") "分类（搜索文本时无效）" else "Filters are ignored when using text search."),
+            UriPartFilter(if (lang == "zh") "分类" else "Genre", genres),
+        )
+        FilterList(list)
+    }
 
-    class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+    class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals[state].second
     }
 }

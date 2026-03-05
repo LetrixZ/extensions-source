@@ -39,8 +39,7 @@ val SharedPreferences.lang: List<String>
         return lang.split(", ")
     }
 
-fun SharedPreferences.Editor.setLang(value: Iterable<String>): SharedPreferences.Editor =
-    putString(LANG_PREF, value.joinToString())
+fun SharedPreferences.Editor.setLang(value: Iterable<String>): SharedPreferences.Editor = putString(LANG_PREF, value.joinToString())
 
 val SharedPreferences.langData: List<LangData>
     get() {
@@ -63,7 +62,12 @@ fun updateLangData(client: OkHttpClient, headers: Headers, preferences: SharedPr
     val translatedCount = episodes.flatMap { it.translated_languages }
         .groupingBy { it }.eachCount()
 
-    val titles = fetchTitles(client, headers)
+    // framagit.org is IP blocked in some countries
+    val titles = try {
+        fetchTitles(client, headers)
+    } catch (e: Exception) {
+        null
+    }
 
     val langs = client.newCall(GET("$BASE_URL/0_sources/langs.json", headers))
         .execute().parseAs<LangsDto>().entries.map { (key, dto) ->
@@ -81,7 +85,7 @@ fun updateLangData(client: OkHttpClient, headers: Headers, preferences: SharedPr
         .also { if (preferences.lang.isEmpty()) editor.chooseLang(it) }
         .map {
             val progress = "${it.translatedCount}/$total translated"
-            LangData(it.key, it.name, progress, it.translators, titles[it.key])
+            LangData(it.key, it.name, progress, it.translators, titles?.get(it.key) ?: if (it.key == "en") TITLE else "$TITLE (${it.key.uppercase()})")
         }
 
     editor.putString(LANG_DATA_PREF, ProtoBuf.encodeToBase64(langs)).apply()
@@ -127,11 +131,9 @@ private fun fetchTitles(client: OkHttpClient, headers: Headers): Map<String, Str
 
 private inline fun <reified T> Response.parseAs(): T = json.decodeFromString(body.string())
 
-private inline fun <reified T> ProtoBuf.decodeFromBase64(base64: String): T =
-    decodeFromByteArray(Base64.decode(base64, Base64.NO_WRAP))
+private inline fun <reified T> ProtoBuf.decodeFromBase64(base64: String): T = decodeFromByteArray(Base64.decode(base64, Base64.NO_WRAP))
 
-private inline fun <reified T> ProtoBuf.encodeToBase64(value: T): String =
-    Base64.encodeToString(encodeToByteArray(value), Base64.NO_WRAP)
+private inline fun <reified T> ProtoBuf.encodeToBase64(value: T): String = Base64.encodeToString(encodeToByteArray(value), Base64.NO_WRAP)
 
 private val json: Json by injectLazy()
 

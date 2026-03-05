@@ -1,7 +1,6 @@
 package eu.kanade.tachiyomi.multisrc.manhwaz
 
 import android.util.Log
-import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.source.model.Filter
@@ -11,6 +10,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.i18n.Intl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -42,6 +42,7 @@ abstract class ManhwaZ(
         "en",
         this::class.java.classLoader!!,
     )
+    protected open val searchPath = "search"
 
     override fun popularMangaRequest(page: Int) = GET(baseUrl, headers)
 
@@ -74,7 +75,7 @@ abstract class ManhwaZ(
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         if (query.isNotEmpty()) {
             val url = baseUrl.toHttpUrl().newBuilder().apply {
-                addPathSegment("search")
+                addPathSegment(searchPath)
                 addQueryParameter("s", query)
                 addQueryParameter("page", page.toString())
             }.build()
@@ -113,12 +114,11 @@ abstract class ManhwaZ(
     override fun searchMangaNextPageSelector(): String? = latestUpdatesNextPageSelector()
 
     private val ongoingStatusList = listOf("ongoing", "đang ra")
-    private val completedStatusList = listOf("completed", "hoàn thành")
+    private val completedStatusList = listOf("completed", "hoàn thành", "Truyện Full")
 
     override fun mangaDetailsParse(document: Document) = SManga.create().apply {
         val statusText = document.selectFirst("div.summary-heading:contains($mangaDetailsStatusHeading) + div.summary-content")
             ?.text()
-            ?.lowercase()
             ?: ""
 
         title = document.selectFirst("div.post-title h1")!!.text()
@@ -126,8 +126,8 @@ abstract class ManhwaZ(
         description = document.selectFirst("div.summary__content")?.text()
         genre = document.select("div.genres-content a[rel=tag]").joinToString { it.text() }
         status = when {
-            ongoingStatusList.contains(statusText) -> SManga.ONGOING
-            completedStatusList.contains(statusText) -> SManga.COMPLETED
+            ongoingStatusList.any { statusText.contains(it, ignoreCase = true) } -> SManga.ONGOING
+            completedStatusList.any { statusText.contains(it, ignoreCase = true) } -> SManga.COMPLETED
             else -> SManga.UNKNOWN
         }
         thumbnail_url = document.selectFirst("div.summary_image img")?.imgAttr()
@@ -146,10 +146,9 @@ abstract class ManhwaZ(
         }
     }
 
-    override fun pageListParse(document: Document) =
-        document.select("div.page-break img").mapIndexed { i, it ->
-            Page(i, imageUrl = it.imgAttr())
-        }
+    override fun pageListParse(document: Document) = document.select("div.page-break img").mapIndexed { i, it ->
+        Page(i, imageUrl = it.imgAttr())
+    }
 
     override fun imageUrlParse(document: Document) = throw UnsupportedOperationException()
 
@@ -181,15 +180,16 @@ abstract class ManhwaZ(
         genres: List<SelectOption>,
     ) : SelectFilter(intl["genre_filter_title"], genres)
 
-    private class OrderByFilter(intl: Intl) : SelectFilter(
-        intl["order_by_filter_title"],
-        listOf(
-            SelectOption(intl["order_by_latest"], "latest"),
-            SelectOption(intl["order_by_rating"], "rating"),
-            SelectOption(intl["order_by_most_views"], "views"),
-            SelectOption(intl["order_by_new"], "new"),
-        ),
-    )
+    private class OrderByFilter(intl: Intl) :
+        SelectFilter(
+            intl["order_by_filter_title"],
+            listOf(
+                SelectOption(intl["order_by_latest"], "latest"),
+                SelectOption(intl["order_by_rating"], "rating"),
+                SelectOption(intl["order_by_most_views"], "views"),
+                SelectOption(intl["order_by_new"], "new"),
+            ),
+        )
 
     private var genres = emptyList<SelectOption>()
     private var fetchGenreStatus = FetchGenreStatus.NOT_FETCHED

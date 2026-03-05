@@ -1,20 +1,13 @@
 package eu.kanade.tachiyomi.extension.zh.zaimanhua
 
 import eu.kanade.tachiyomi.source.model.SManga
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.json.Json
-import okhttp3.Response
 import okhttp3.ResponseBody
-import uy.kohesive.injekt.injectLazy
+import java.util.zip.GZIPInputStream
 
-val json: Json by injectLazy()
-
-inline fun <reified T> Response.parseAs(): T {
-    return json.decodeFromString(body.string())
-}
-
-inline fun <reified T> ResponseBody.parseAs(): T {
-    return json.decodeFromString(this.string())
+fun ResponseBody.stringCompat(contentEncoding: String?): String = if (contentEncoding == "gzip") {
+    GZIPInputStream(byteStream()).bufferedReader().use { it.readText() }
+} else {
+    string()
 }
 
 fun parseStatus(status: String): Int = when (status) {

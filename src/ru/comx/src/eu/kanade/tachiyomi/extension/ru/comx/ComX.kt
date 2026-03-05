@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import android.webkit.CookieManager
 import android.widget.Toast
 import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.asObservable
@@ -17,11 +18,10 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.utils.getPreferencesLazy
-import kotlinx.serialization.decodeFromString
+import keiyoushi.utils.getPreferences
+import keiyoushi.utils.tryParse
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.float
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -43,15 +43,34 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.text.replace
 
-class ComX : ParsedHttpSource(), ConfigurableSource {
+class ComX :
+    ParsedHttpSource(),
+    ConfigurableSource {
     private val json: Json by injectLazy()
 
     override val id = 1114173092141608635
 
     override val name = "Com-X"
 
-    private val preferences: SharedPreferences by getPreferencesLazy()
+    private val preferences: SharedPreferences = getPreferences {
+        this.getString(DOMAIN_PREF, DOMAIN_DEFAULT)?.let { domain ->
+            if (!domain.matches(URL_REGEX)) {
+                this.edit()
+                    .putString(DOMAIN_PREF, DOMAIN_DEFAULT)
+                    .apply()
+            }
+        }
+        this.getString(DEFAULT_DOMAIN_PREF, null).let { prefDefaultDomain ->
+            if (prefDefaultDomain != DOMAIN_DEFAULT) {
+                this.edit()
+                    .putString(DOMAIN_PREF, DOMAIN_DEFAULT)
+                    .putString(DEFAULT_DOMAIN_PREF, DOMAIN_DEFAULT)
+                    .apply()
+            }
+        }
+    }
 
     override val baseUrl = preferences.getString(DOMAIN_PREF, DOMAIN_DEFAULT)!!
 
@@ -59,6 +78,8 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
 
     override val supportsLatest = true
 
+    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
+        .add("Referer", "$baseUrl/")
     private val cookieManager by lazy { CookieManager.getInstance() }
 
     override val client = network.cloudflareClient.newBuilder()
@@ -109,16 +130,27 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
         )
         .addInterceptor { chain ->
             val originalRequest = chain.request()
-            val response = chain.proceed(originalRequest)
+            var response = chain.proceed(originalRequest)
             if (response.code == 404 && response.asJsoup().toString().contains("Protected by Batman")) {
                 throw IOException("Antibot, попробуйте пройти капчу в WebView")
+            }
+            val imgPreload = baseUrl.replace(Regex("^https?://"), "img.") // https://img.com-x.life
+            if (response.code == 403 &&
+                (originalRequest.url.toString().contains("/comix/")) &&
+                !(originalRequest.url.toString().contains(imgPreload))
+            ) {
+                val newUrl = originalRequest.url
+                    .newBuilder()
+                    .host(imgPreload)
+                    .build()
+
+                val newRequest = originalRequest.newBuilder().url(newUrl).headers(headers).build()
+                response.close()
+                response = chain.proceed(newRequest)
             }
             response
         }
         .build()
-
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("Referer", baseUrl)
 
     // Popular
     override fun popularMangaRequest(page: Int): Request = searchMangaRequest(page, "", getFilterList())
@@ -196,26 +228,31 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
                     orderBy = arrayOf("date", "rating", "news_read", "comm_num", "title")[filter.state!!.index]
                     ascEnd = if (filter.state!!.ascending) "asc" else "desc"
                 }
+
                 is AgeList -> filter.state.forEach { age ->
                     if (age.state) {
                         mutableAge += age.id
                     }
                 }
+
                 is GenreList -> filter.state.forEach { genre ->
                     if (genre.state) {
                         mutableGenre += genre.id
                     }
                 }
+
                 is TypeList -> filter.state.forEach { type ->
                     if (type.state) {
                         mutableType += type.id
                     }
                 }
+
                 is PubList -> filter.state.forEach { publisher ->
                     if (publisher.state) {
                         sectionPub += publisher.id
                     }
                 }
+
                 else -> {}
             }
         }
@@ -271,7 +308,11 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
         manga.status = parseStatus(infoElement.select(".page__list li:contains(Статус)").text())
 
         manga.description = infoElement.select(".page__title-original").text().trim() + "\n" +
-            if (document.select(".page__list li:contains(Тип выпуска)").text().contains("!!! События в комиксах - ХРОНОЛОГИЯ !!!")) { "Cобытие в комиксах - ХРОНОЛОГИЯ\n" } else { "" } +
+            if (document.select(".page__list li:contains(Тип выпуска)").text().contains("!!! События в комиксах - ХРОНОЛОГИЯ !!!")) {
+                "Cобытие в комиксах - ХРОНОЛОГИЯ\n"
+            } else {
+                ""
+            } +
             ratingStar + " " + ratingValue + " (голосов: " + ratingVotes + ")\n" +
             infoElement.select(".page__text ").first()?.html()?.let { Jsoup.parse(it) }
                 ?.select("body:not(:has(p)),p,br")
@@ -294,6 +335,7 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
         element.contains("Продолжается") ||
             element.contains(" из ") ||
             element.contains("Онгоинг") -> SManga.ONGOING
+
         element.contains("Заверш") ||
             element.contains("Лимитка") ||
             element.contains("Ван шот") ||
@@ -306,36 +348,116 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
     override fun chapterListSelector() = throw NotImplementedError("Unused")
 
     override fun chapterListParse(response: Response): List<SChapter> {
+        val extraStep = 0.001
         val document = response.asJsoup()
 
-        val dataStr = document
-            .toString()
+        val dataStr = document.toString()
             .substringAfter("window.__DATA__ = ")
             .substringBefore("</script>")
             .substringBeforeLast(";")
 
         val data = json.decodeFromString<JsonObject>(dataStr)
-        val chaptersList = data["chapters"]?.jsonArray
-        val isEvent = document.select(".page__list li:contains(Тип выпуска)").text()
+        val chaptersList = data["chapters"]?.jsonArray ?: return emptyList()
+
+        val isEvent = document
+            .select(".page__list li:contains(Тип выпуска)")
+            .text()
             .contains("!!! События в комиксах - ХРОНОЛОГИЯ !!!")
 
-        val chapters: List<SChapter>? = chaptersList?.map {
+        var currentBase: Float?
+        var subIndex: Int
+
+        val pendingExtras = mutableListOf<SChapter>()
+
+        val result = mutableListOf<SChapter>()
+
+        chaptersList.forEach { element ->
+
+            val obj = element.jsonObject
             val chapter = SChapter.create()
-            chapter.name = it.jsonObject["title"]!!.jsonPrimitive.contentOrNull.toString()
-            chapter.date_upload = simpleDateFormat.parse(it.jsonObject["date"]!!.jsonPrimitive.content)?.time ?: 0L
-            chapter.chapter_number = it.jsonObject["posi"]!!.jsonPrimitive.float
-            // when it is Event add reading order numbers as prefix
-            if (isEvent) {
-                chapter.name = chapter.chapter_number.toInt().toString() + " " + chapter.name
+
+            val title = obj["title"]!!.jsonPrimitive.content
+            val posi = obj["posi"]!!.jsonPrimitive.float
+
+            chapter.name = title
+            chapter.date_upload =
+                simpleDateFormat.tryParse(obj["date"]!!.jsonPrimitive.content)
+
+            val parsedBase = parseBaseChapterNumber(title)
+            val isExtra = isExtraChapter(title)
+
+            when {
+                parsedBase != null -> {
+                    currentBase = parsedBase
+                    subIndex = 0
+                    if (pendingExtras.isNotEmpty()) {
+                        pendingExtras.reversed().forEach {
+                            subIndex++
+                            it.chapter_number =
+                                (currentBase!! + subIndex.toFloat() * extraStep).toFloat()
+                        }
+                        pendingExtras.clear()
+                    }
+                    chapter.chapter_number = parsedBase
+                }
+
+                isExtra -> {
+                    pendingExtras += chapter
+                }
+
+                else -> {
+                    currentBase = posi
+                    subIndex = 0
+                    if (pendingExtras.isNotEmpty()) {
+                        pendingExtras.reversed().forEach {
+                            subIndex++
+                            it.chapter_number =
+                                (currentBase + subIndex.toFloat() * extraStep).toFloat()
+                        }
+                        pendingExtras.clear()
+                    }
+                    chapter.chapter_number = posi
+                }
             }
-            chapter.setUrlWithoutDomain("/readcomix/" + data["news_id"] + "/" + it.jsonObject["id"]!!.jsonPrimitive.content + ".html")
-            chapter
+            if (isEvent && chapter.chapter_number > 0f) {
+                chapter.name =
+                    chapter.chapter_number.toInt().toString() +
+                    " " + chapter.name
+            }
+            chapter.setUrlWithoutDomain(
+                "/reader/" +
+                    data["news_id"] +
+                    "/" +
+                    obj["id"]!!.jsonPrimitive.content,
+            )
+
+            result += chapter
         }
-        return chapters ?: emptyList()
+        return result
     }
 
-    override fun chapterFromElement(element: Element): SChapter =
-        throw NotImplementedError("Unused")
+    private fun parseBaseChapterNumber(title: String): Float? {
+        val dashIndex = title.indexOf('-')
+        if (dashIndex == -1) return null
+
+        val afterDash = title.substring(dashIndex + 1).trimStart()
+
+        val end = afterDash.indexOf(' ').let {
+            if (it == -1) afterDash.length else it
+        }
+
+        return afterDash.take(end).toFloatOrNull()
+    }
+
+    private fun isExtraChapter(title: String): Boolean {
+        val lower = title.lowercase()
+        return "экстра" in lower ||
+            "extra" in lower ||
+            "special" in lower ||
+            "bonus" in lower
+    }
+
+    override fun chapterFromElement(element: Element): SChapter = throw NotImplementedError("Unused")
 
     // Pages
     override fun pageListParse(response: Response): List<Page> {
@@ -371,38 +493,33 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
         return pages
     }
 
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        return client.newCall(pageListRequest(chapter))
-            .asObservable().doOnNext { response ->
-                if (!response.isSuccessful) {
-                    if (response.code == 404 && response.asJsoup().toString().contains("Выпуск был удален по требованию правообладателя")) {
-                        throw Exception("Лицензировано. Возможно может помочь авторизация через WebView")
-                    } else {
-                        throw Exception("HTTP error ${response.code}")
-                    }
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = client.newCall(pageListRequest(chapter))
+        .asObservable().doOnNext { response ->
+            if (!response.isSuccessful) {
+                if (response.code == 404 && response.asJsoup().toString().contains("Выпуск был удален по требованию правообладателя")) {
+                    throw Exception("Лицензировано. Возможно может помочь авторизация через WebView")
+                } else {
+                    throw Exception("HTTP error ${response.code}")
                 }
             }
-            .map { response ->
-                pageListParse(response)
-            }
-    }
+        }
+        .map { response ->
+            pageListParse(response)
+        }
 
-    override fun pageListParse(document: Document): List<Page> {
-        throw Exception("Not used")
-    }
+    override fun pageListParse(document: Document): List<Page> = throw Exception("Not used")
 
     override fun imageUrlParse(document: Document) = ""
 
-    override fun imageRequest(page: Page): Request {
-        return GET(page.imageUrl!!, headers)
-    }
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!, headers)
 
     // Filters
-    private class OrderBy : Filter.Sort(
-        "Сортировать по",
-        arrayOf("Дате", "Популярности", "Посещаемости", "Комментариям", "Алфавиту"),
-        Selection(1, false),
-    )
+    private class OrderBy :
+        Filter.Sort(
+            "Сортировать по",
+            arrayOf("Дате", "Популярности", "Посещаемости", "Комментариям", "Алфавиту"),
+            Selection(1, false),
+        )
 
     private class CheckFilter(name: String, val id: String) : Filter.CheckBox(name)
 
@@ -571,73 +688,52 @@ class ComX : ParsedHttpSource(), ConfigurableSource {
         CheckFilter("Ёнкома", "121"),
     )
 
-    override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
             key = DOMAIN_PREF
             title = "Домен"
-            summary = baseUrl
+            summary = "$baseUrl\n\nПо умолчанию: $DOMAIN_DEFAULT"
             setDefaultValue(DOMAIN_DEFAULT)
             setOnPreferenceChangeListener { _, newValue ->
-                try {
-                    val res =
-                        preferences.edit().putString(DOMAIN_PREF, newValue as String).commit()
-                    Toast.makeText(
-                        screen.context,
-                        "Для смены домена необходимо перезапустить приложение с полной остановкой.",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    res
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    false
+                if (!newValue.toString().matches(URL_REGEX)) {
+                    val warning = "Домен должен содаржать https:// или http://"
+                    Toast.makeText(screen.context, warning, Toast.LENGTH_LONG).show()
+                    return@setOnPreferenceChangeListener false
                 }
+                val warning = "Для смены домена необходимо перезапустить приложение с полной остановкой."
+                Toast.makeText(screen.context, warning, Toast.LENGTH_LONG).show()
+                true
             }
         }.let(screen::addPreference)
 
         EditTextPreference(screen.context).apply {
             key = FORCE_IMG_DOMAIN_PREF
             title = "Домен картинок"
-            summary = "Переопределение домена картинок"
+            summary = "Если изображения не грузяться очистите «Кэш приложения» и всевозможные данные в настройках приложения  (Настройки -> Дополнительно) \nи перезапустите приложение с полной остановкой" +
+                "\n\nНастройка переопределяет домен картинок." +
+                "\nПо умолчанию домент картинок берётся автоматически." +
+                "\nЧтобы узнать домен изображения откройте главу в браузере и после долгим тапом откройте изображение в новом окне."
             setDefaultValue("")
-            setOnPreferenceChangeListener { _, newValue ->
-                try {
-                    val res =
-                        preferences.edit().putString(FORCE_IMG_DOMAIN_PREF, newValue as String).commit()
-                    Toast.makeText(
-                        screen.context,
-                        "Для смены домена необходимо перезапустить приложение с полной остановкой.",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    res
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    false
-                }
+            setOnPreferenceChangeListener { _, _ ->
+                val warning = "Для смены домена необходимо перезапустить приложение с полной остановкой."
+                Toast.makeText(screen.context, warning, Toast.LENGTH_LONG).show()
+                true
             }
         }.let(screen::addPreference)
-    }
-
-    init {
-        preferences.getString(DEFAULT_DOMAIN_PREF, null).let { prefDefaultDomain ->
-            if (prefDefaultDomain != DOMAIN_DEFAULT) {
-                preferences.edit()
-                    .putString(DOMAIN_PREF, DOMAIN_DEFAULT)
-                    .putString(DEFAULT_DOMAIN_PREF, DOMAIN_DEFAULT)
-                    .apply()
-            }
-        }
     }
 
     companion object {
         private val simpleDateFormat by lazy { SimpleDateFormat("dd.MM.yyyy", Locale.US) }
 
-        private const val DOMAIN_DEFAULT = "https://comxlife.com"
+        private const val DOMAIN_DEFAULT = "https://com-x.life"
 
         private const val DEFAULT_DOMAIN_PREF = "DEFAULT_DOMAIN_PREF"
 
         private const val DOMAIN_PREF = "DOMAIN_PREF"
 
         private const val FORCE_IMG_DOMAIN_PREF = "FORCE_IMG_DOMAIN_PREF"
+
+        private val URL_REGEX = Regex("^https?://.+")
 
         private val IMG_DOMAIN_REGEX = "\"host\":\"(.+?)\"".toRegex()
     }

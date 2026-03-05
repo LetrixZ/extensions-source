@@ -20,8 +20,8 @@ import java.util.Locale
 
 class PerfScan : HttpSource() {
     override val name = "Perf Scan"
-    override val baseUrl = "https://perf-scan.net"
-    private val apiUrl = "https://api.perf-scan.net"
+    override val baseUrl = "https://perf-scan.xyz"
+    private val apiUrl = "https://api.perf-scan.xyz"
     override val lang = "fr"
     override val supportsLatest = true
     override val versionId = 2
@@ -86,9 +86,7 @@ class PerfScan : HttpSource() {
 
     override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
-    override fun getMangaUrl(manga: SManga): String {
-        return baseUrl + manga.url
-    }
+    override fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
 
     // =========================== Manga Details ============================
     override fun mangaDetailsRequest(manga: SManga): Request {
@@ -112,14 +110,12 @@ class PerfScan : HttpSource() {
         }
     }
 
-    private fun parseStatus(status: String?): Int {
-        return when (status?.lowercase()) {
-            "en cours" -> SManga.ONGOING
-            "terminé" -> SManga.COMPLETED
-            "en pause" -> SManga.ON_HIATUS
-            "annulé" -> SManga.CANCELLED
-            else -> SManga.UNKNOWN
-        }
+    private fun parseStatus(status: String?): Int = when (status?.lowercase()) {
+        "en cours" -> SManga.ONGOING
+        "terminé" -> SManga.COMPLETED
+        "en pause" -> SManga.ON_HIATUS
+        "annulé" -> SManga.CANCELLED
+        else -> SManga.UNKNOWN
     }
 
     // ============================== Chapters ==============================
@@ -142,9 +138,7 @@ class PerfScan : HttpSource() {
     }
 
     // =============================== Pages ================================
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(apiUrl + chapter.url, headers)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET(apiUrl + chapter.url, headers)
 
     override fun pageListParse(response: Response): List<Page> {
         val result = response.parseAs<PerfScanResponse<PerfScanPageList>>()

@@ -1,0 +1,10 @@
+ext {
+    extName = 'Luvyaa'
+    extClass = '.Luvyaa'
+    themePkg = 'mangathemesia'
+    baseUrl = 'https://luvyaa.id'
+    overrideVersionCode = 1
+    isNsfw = true
+}
+
+apply from: "$rootDir/common.gradle"
